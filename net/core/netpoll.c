@@ -208,6 +208,13 @@ static void netpoll_poll_dev(struct net_device *dev)
 
 	zap_completion_queue();
 }
+EXPORT_SYMBOL(netpoll_poll_dev);
+
+void netpoll_poll(struct netpoll *np)
+{
+	netpoll_poll_dev(np->dev);
+}
+EXPORT_SYMBOL(netpoll_poll);
 
 static void refill_skbs(void)
 {
@@ -603,7 +610,8 @@ int __netpoll_rx(struct sk_buff *skb)
 
 		np->rx_hook(np, ntohs(uh->source),
 			       (char *)(uh+1),
-			       ulen - sizeof(struct udphdr));
+			       ulen - sizeof(struct udphdr),
+                   skb);
 		hits++;
 	}
 
