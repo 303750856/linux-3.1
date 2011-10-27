@@ -1401,9 +1401,12 @@ int search_binary_handler(struct linux_binprm *bprm,struct pt_regs *regs)
 			 */
 			bprm->recursion_depth = depth;
 			if (retval >= 0) {
-				if (depth == 0)
+				if (depth == 0) {
+					UTRACE_HOOK(current, EXEC,
+						report_exec(fmt, bprm, regs));
 					ptrace_event(PTRACE_EVENT_EXEC,
 							old_pid);
+				}
 				put_binfmt(fmt);
 				allow_write_access(bprm->file);
 				if (bprm->file)

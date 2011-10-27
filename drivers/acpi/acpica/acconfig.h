@@ -117,7 +117,7 @@
 
 /* Maximum number of While() loop iterations before forced abort */
 
-#define ACPI_MAX_LOOP_ITERATIONS        0xFFFF
+#define ACPI_MAX_LOOP_ITERATIONS        0xFFFFFF
 
 /* Maximum sleep allowed via Sleep() operator */
 

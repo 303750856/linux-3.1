@@ -168,6 +168,8 @@ void release_task(struct task_struct * p)
 	struct task_struct *leader;
 	int zap_leader;
 repeat:
+	utrace_release_task(p);
+
 	/* don't need to get the RCU readlock here - the process is dead and
 	 * can't be modifying its own credentials. But shut RCU-lockdep up */
 	rcu_read_lock();
@@ -860,6 +862,8 @@ static void exit_notify(struct task_struct *tsk, int group_dead)
 		wake_up_process(tsk->signal->group_exit_task);
 	write_unlock_irq(&tasklist_lock);
 
+	utrace_exit_notify(tsk, autoreap ? -1 : SIGCHLD, group_dead);
+
 	/* If the process is dead, release it - nobody will wait for it */
 	if (autoreap)
 		release_task(tsk);
@@ -913,6 +917,7 @@ NORET_TYPE void do_exit(long code)
 	 */
 	set_fs(USER_DS);
 
+	UTRACE_HOOK(current, EXIT, report_exit(&code));
 	ptrace_event(PTRACE_EVENT_EXIT, code);
 
 	validate_creds_for_do_exit(tsk);

@@ -239,6 +239,8 @@ static inline int valid_signal(unsigned long sig)
 struct timespec;
 struct pt_regs;
 
+extern int wake_up_quiescent(struct task_struct *p, unsigned int state);
+
 extern int next_signal(struct sigpending *pending, sigset_t *mask);
 extern int do_send_sig_info(int sig, struct siginfo *info,
 				struct task_struct *p, bool group);

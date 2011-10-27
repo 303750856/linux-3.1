@@ -1474,8 +1474,6 @@ static void i8xx_disable_fbc(struct drm_device *dev)
 		DRM_DEBUG_KMS("FBC idle timed out\n");
 		return;
 	}
-
-	DRM_DEBUG_KMS("disabled FBC\n");
 }
 
 static void i8xx_enable_fbc(struct drm_crtc *crtc, unsigned long interval)
@@ -1516,9 +1514,6 @@ static void i8xx_enable_fbc(struct drm_crtc *crtc, unsigned long interval)
 	fbc_ctl |= (interval & 0x2fff) << FBC_CTL_INTERVAL_SHIFT;
 	fbc_ctl |= obj->fence_reg;
 	I915_WRITE(FBC_CONTROL, fbc_ctl);
-
-	DRM_DEBUG_KMS("enabled FBC, pitch %d, yoff %d, plane %d, ",
-		      cfb_pitch, crtc->y, intel_crtc->plane);
 }
 
 static bool i8xx_fbc_enabled(struct drm_device *dev)
@@ -1551,8 +1546,6 @@ static void g4x_enable_fbc(struct drm_crtc *crtc, unsigned long interval)
 
 	/* enable it... */
 	I915_WRITE(DPFC_CONTROL, I915_READ(DPFC_CONTROL) | DPFC_CTL_EN);
-
-	DRM_DEBUG_KMS("enabled fbc on plane %d\n", intel_crtc->plane);
 }
 
 static void g4x_disable_fbc(struct drm_device *dev)
@@ -1565,8 +1558,6 @@ static void g4x_disable_fbc(struct drm_device *dev)
 	if (dpfc_ctl & DPFC_CTL_EN) {
 		dpfc_ctl &= ~DPFC_CTL_EN;
 		I915_WRITE(DPFC_CONTROL, dpfc_ctl);
-
-		DRM_DEBUG_KMS("disabled FBC\n");
 	}
 }
 
@@ -1631,8 +1622,6 @@ static void ironlake_enable_fbc(struct drm_crtc *crtc, unsigned long interval)
 		I915_WRITE(DPFC_CPU_FENCE_OFFSET, crtc->y);
 		sandybridge_blit_fbc_update(dev);
 	}
-
-	DRM_DEBUG_KMS("enabled fbc on plane %d\n", intel_crtc->plane);
 }
 
 static void ironlake_disable_fbc(struct drm_device *dev)
@@ -1645,8 +1634,6 @@ static void ironlake_disable_fbc(struct drm_device *dev)
 	if (dpfc_ctl & DPFC_CTL_EN) {
 		dpfc_ctl &= ~DPFC_CTL_EN;
 		I915_WRITE(ILK_DPFC_CONTROL, dpfc_ctl);
-
-		DRM_DEBUG_KMS("disabled FBC\n");
 	}
 }
 
@@ -1701,8 +1688,6 @@ static void intel_cancel_fbc_work(struct drm_i915_private *dev_priv)
 	if (dev_priv->fbc_work == NULL)
 		return;
 
-	DRM_DEBUG_KMS("cancelling pending FBC enable\n");
-
 	/* Synchronisation is provided by struct_mutex and checking of
 	 * dev_priv->fbc_work, so we can perform the cancellation
 	 * entirely asynchronously.
@@ -1742,8 +1727,6 @@ static void intel_enable_fbc(struct drm_crtc *crtc, unsigned long interval)
 	INIT_DELAYED_WORK(&work->work, intel_fbc_work_fn);
 
 	dev_priv->fbc_work = work;
-
-	DRM_DEBUG_KMS("scheduling delayed FBC enable\n");
 
 	/* Delay the actual enabling to let pageflipping cease and the
 	 * display to settle before starting the compression. Note that
@@ -1800,8 +1783,6 @@ static void intel_update_fbc(struct drm_device *dev)
 	struct intel_framebuffer *intel_fb;
 	struct drm_i915_gem_object *obj;
 	int enable_fbc;
-
-	DRM_DEBUG_KMS("\n");
 
 	if (!i915_powersave)
 		return;
@@ -6195,7 +6176,6 @@ void intel_release_load_detect_pipe(struct intel_encoder *intel_encoder,
 				    struct intel_load_detect_pipe *old)
 {
 	struct drm_encoder *encoder = &intel_encoder->base;
-	struct drm_device *dev = encoder->dev;
 	struct drm_crtc *crtc = encoder->crtc;
 	struct drm_encoder_helper_funcs *encoder_funcs = encoder->helper_private;
 	struct drm_crtc_helper_funcs *crtc_funcs = crtc->helper_private;
@@ -6206,7 +6186,6 @@ void intel_release_load_detect_pipe(struct intel_encoder *intel_encoder,
 
 	if (old->load_detect_temp) {
 		connector->encoder = NULL;
-		drm_helper_disable_unused_functions(dev);
 
 		if (old->release_fb)
 			old->release_fb->funcs->destroy(old->release_fb);
