@@ -29,6 +29,18 @@
 #include <linux/mutex.h>
 #include <linux/dmi.h>
 
+/*********tomsun 2011-02-21**************/
+#include <net/sock.h>
+#include <linux/netlink.h>
+#include <linux/proc_fs.h>
+#include <linux/skbuff.h>
+#include <linux/connector.h>
+
+#define MAX_CAP	1024
+static struct sock *acer_sock_key;
+static unsigned long timeout = HZ / 10;
+
+/***************end**********************/
 #define DRIVER_DESC	"AT and PS/2 keyboard driver"
 
 MODULE_AUTHOR("Vojtech Pavlik <vojtech@suse.cz>");
@@ -301,6 +313,60 @@ static const unsigned int xl_table[] = {
 	ATKBD_RET_BAT, ATKBD_RET_ERR, ATKBD_RET_ACK,
 	ATKBD_RET_NAK, ATKBD_RET_HANJA, ATKBD_RET_HANGEUL,
 };
+/*
+ *   mars start linpus hotkey --- sysfs
+ */
+static int atkbd_netlink_on = 0;
+
+static ssize_t atkbd_on_show(struct device *d,	
+				struct device_attribute *attr, char *b)		
+{
+	return sprintf(b, "%d\n", atkbd_netlink_on);
+}
+
+static ssize_t atkbd_on_store(struct device *d, struct device_attribute *attr,
+				 char *b, size_t count)		
+{
+	sscanf(b, "%d", &atkbd_netlink_on);
+	return count;
+}
+
+static struct kobj_attribute atkbd_sysfs =
+		__ATTR(atkbd_netlink_on, 0666, atkbd_on_show, atkbd_on_store);
+static struct attribute * attrs [] =
+{
+	&atkbd_sysfs.attr,
+	NULL,
+};
+
+static struct attribute_group atkbd_sysfs_group = {
+	.attrs = attrs,
+};
+
+static struct kobject *atkbd_sysfs_kobj;
+
+static int linpus_create_atkbd_sysfs(void)
+{
+	int retval;
+
+	atkbd_sysfs_kobj = kobject_create_and_add("atkbd", kernel_kobj);
+	if (!atkbd_sysfs_kobj)
+		return ENOMEM;
+	
+	retval = sysfs_create_group(atkbd_sysfs_kobj, &atkbd_sysfs_group);
+	if (retval)
+		kobject_put(atkbd_sysfs_kobj);
+	
+	return retval;
+}
+
+static int linpus_remove_atkbd_sysfs(void)
+{
+	kobject_put(atkbd_sysfs_kobj);
+}
+/*
+ *   mars end linpus hotkey --- sysfs
+ */
 
 /*
  * Checks if we should mangle the scancode to extract 'release' bit
@@ -372,7 +438,17 @@ static irqreturn_t atkbd_interrupt(struct serio *serio, unsigned char data,
 	int scroll = 0, hscroll = 0, click = -1;
 	int value;
 	unsigned short keycode;
+	//static unsigned long long old_jiffies;//marstian@0509
+	//unsigned long long new_jiffies;//marstian@0509
+	static unsigned  long old_jiffies;//marstian@0509
+	unsigned long  new_jiffies;//marstian@0509
 
+/********tomsun 2011-02-21*********/
+	struct sk_buff *skb = NULL;
+	struct nlmsghdr *nlh;
+	int len;
+	char key_str[4];
+/**************end*****************/
 	dev_dbg(&serio->dev, "Received %02x flags %02x\n", data, flags);
 
 #if !defined(__i386__) && !defined (__x86_64__)
@@ -430,11 +506,15 @@ static irqreturn_t atkbd_interrupt(struct serio *serio, unsigned char data,
 		goto out;
 	case ATKBD_RET_ACK:
 	case ATKBD_RET_NAK:
+#if 0
+		/* Quite a few key switchers and other tools trigger this
+		 * and it confuses people who can do nothing about it */
 		if (printk_ratelimit())
 			dev_warn(&serio->dev,
 				 "Spurious %s on %s. "
 				 "Some program might be trying access hardware directly.\n",
 				 data == ATKBD_RET_ACK ? "ACK" : "NAK", serio->phys);
+#endif
 		goto out;
 	case ATKBD_RET_ERR:
 		atkbd->err_count++;
@@ -452,6 +532,37 @@ static irqreturn_t atkbd_interrupt(struct serio *serio, unsigned char data,
 
 	if (keycode != ATKBD_KEY_NULL)
 		input_event(dev, EV_MSC, MSC_SCAN, code);
+/*********tomsun 2011-02-21****************/
+	if (!atkbd->release){
+	if (keycode == 114 || keycode == 113 || keycode == 115 || keycode == 163 || keycode == 164 || keycode == 165 || keycode == 166 || keycode == 58 || keycode == 69 || keycode ==70){
+	//	schedule_timeout(timeout); //marstian
+	#if  1
+	new_jiffies=jiffies;//mars
+	//new_jiffies=get_jiffies_64();//mars
+	if ( new_jiffies - old_jiffies > 200 ){//mars
+		old_jiffies = new_jiffies ;  //mars
+		skb = alloc_skb(NLMSG_SPACE(MAX_CAP), GFP_ATOMIC);
+		if (!skb){
+			printk (KERN_ERR"@@@Tomsun alloc skb failer\n");
+			goto oom;
+		}
+		nlh = NLMSG_PUT(skb, 0, 0, NLMSG_DONE, NLMSG_SPACE(MAX_CAP));
+		sprintf(key_str, "%d", keycode);
+		len = strncpy(NLMSG_DATA(nlh), key_str, 4);
+		NETLINK_CB(skb).dst_group =1;
+		if (acer_sock_key == NULL)
+			printk(KERN_ERR"@@@@@@@@ Tomsun acer_sock_key== NULL\n");
+		else
+			netlink_broadcast(acer_sock_key, skb, 0, 1, GFP_KERNEL);
+	}//mars
+	#endif
+		if (keycode == 114 || keycode == 113 || keycode == 115 || keycode == 163 || keycode == 164 || keycode == 165 || keycode == 166 || keycode == 70){
+			return IRQ_HANDLED;
+		}
+	}
+	}
+/*****************end**********************/
+oom:
 
 	switch (keycode) {
 	case ATKBD_KEY_NULL:
@@ -522,6 +633,8 @@ static irqreturn_t atkbd_interrupt(struct serio *serio, unsigned char data,
 	atkbd->release = false;
 out:
 	return IRQ_HANDLED;
+nlmsg_failure:
+	printk(KERN_ERR"tomsun ");
 }
 
 static int atkbd_set_repeat_rate(struct atkbd *atkbd)
@@ -1732,12 +1845,21 @@ static int __init atkbd_init(void)
 {
 	dmi_check_system(atkbd_dmi_quirk_table);
 
+	/***********tomsun 2011-02-21*************/
+	acer_sock_key = netlink_kernel_create (&init_net, NETLINK_LITE_ATKBD, 0, NULL, NULL, THIS_MODULE);
+	if (acer_sock_key == NULL){
+		printk (KERN_ERR"@@@@@ Tomsun create netlink sock failer for key\n");
+	}	
+	/*****************end***********************/
+	linpus_create_atkbd_sysfs();
 	return serio_register_driver(&atkbd_drv);
 }
 
 static void __exit atkbd_exit(void)
 {
+	linpus_remove_atkbd_sysfs();
 	serio_unregister_driver(&atkbd_drv);
+//	netlink_kernel_release(acer_sock_key);
 }
 
 module_init(atkbd_init);

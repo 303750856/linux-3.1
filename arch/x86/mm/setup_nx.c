@@ -1,3 +1,4 @@
+#include <linux/sched.h>
 #include <linux/spinlock.h>
 #include <linux/errno.h>
 #include <linux/init.h>
@@ -5,7 +6,7 @@
 #include <asm/pgtable.h>
 #include <asm/proto.h>
 
-static int disable_nx __cpuinitdata;
+int disable_nx __cpuinitdata;
 
 /*
  * noexec = on|off
@@ -40,6 +41,10 @@ void __cpuinit x86_configure_nx(void)
 void __init x86_report_nx(void)
 {
 	if (!cpu_has_nx) {
+		if (!disable_nx)
+			printk(KERN_INFO "Using x86 segment limits to approximate NX protection\n");
+		else
+
 		printk(KERN_NOTICE "Notice: NX (Execute Disable) protection "
 		       "missing in CPU!\n");
 	} else {

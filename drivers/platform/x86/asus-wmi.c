@@ -50,6 +50,16 @@
 
 #include "asus-wmi.h"
 
+/* Midtom 20110401:*/
+#include <net/sock.h>
+#include <linux/netlink.h>
+#include <linux/skbuff.h>
+#include <linux/proc_fs.h>
+#include <asm/uaccess.h>
+#define	EEEPC_WMI_FILE	"eeepc-wmi"
+/*marstian 20110425:*/
+#include <acpi/marstian.h>
+
 MODULE_AUTHOR("Corentin Chary <corentincj@iksaif.net>, "
 	      "Yong Wang <yong.y.wang@intel.com>");
 MODULE_DESCRIPTION("Asus Generic WMI Driver");
@@ -62,6 +72,17 @@ MODULE_LICENSE("GPL");
 	(container_of((pdrv), struct asus_wmi_driver, platform_driver))
 
 #define ASUS_WMI_MGMT_GUID	"97845ED0-4E6D-11DE-8A39-0800200C9A66"
+
+/* Midtom 20110329: */
+#define	ASUS_BUF 1024
+#define NOTIFY_CHANAGING_CPU_MODE 0x5c
+#define NOTIFY_AC_PLUG_OUT 0x57
+#define NOTIFY_AC_PLUG_IN 0x58
+#define EEEPC_WMI_METHODID_DEVP	0x50564544
+#define EEEPC_WMI_DEVID_SHE	0x00120022
+static struct sock *socket_eeepc_cpu_mode;
+static struct proc_dir_entry *example_dir, *first_file;
+//end Midtom
 
 #define NOTIFY_BRNUP_MIN		0x11
 #define NOTIFY_BRNUP_MAX		0x1f
@@ -300,6 +321,238 @@ static int asus_wmi_set_devstate(u32 dev_id, u32 ctrl_param,
 	return asus_wmi_evaluate_method(ASUS_WMI_METHODID_DEVS, dev_id,
 					ctrl_param, retval);
 }
+//start linpus
+//marstian start
+static u32 four_mode;
+#define PROCFS_MAX_SIZE		1024
+
+static unsigned long procfs_buffer_size = 0;
+unsigned long debugdata;
+static char procfs_buffer[PROCFS_MAX_SIZE];
+static int select_cpu_mode_state (u32 dev_id,u32 hand_set);//marstian
+static int set_cpu_mode_state (u32 dev_id, u32 mode, u32 auto_mod);
+static int     SHE_auto_mode (void) ;
+
+int
+read_first(char *buffer,
+		char **buffer_location,
+		off_t offset, int buffer_length, int *eof, void *data)
+{
+	int ret;
+
+//	printk(KERN_INFO "procfile_read (/proc/%s) called\n", procfs_name);
+
+	if (offset > 0) {
+		/*  we have finished to read, return 0 */
+		ret  = 0;
+	} else {
+		/*  fill the buffer, return the buffer size */
+		ret = sprintf(buffer, "%ld\n",debugdata);
+	}
+
+	return ret;
+}
+int write_first(struct file *file, const char *buffer, unsigned long count,
+		void *data)
+{
+	/*  get buffer size */
+	procfs_buffer_size = count;
+	if (procfs_buffer_size > PROCFS_MAX_SIZE ) {
+		procfs_buffer_size = PROCFS_MAX_SIZE;
+	}
+
+	/*  write data to the buffer */
+	if ( copy_from_user(procfs_buffer, buffer, procfs_buffer_size) ) {
+		return -EFAULT;
+	}
+	debugdata=simple_strtoul(buffer, NULL, 16);
+	if ( 0< debugdata && debugdata < 4 )
+			select_cpu_mode_state (EEEPC_WMI_DEVID_SHE,debugdata - 1);  
+	
+        if ( 0x30 <= debugdata && debugdata <= 0x33 ) { //specify auto,SP,HP,Save by procfs
+                if ( debugdata - 0x30  == 3) //auto
+                        SHE_auto_mode ();
+                else
+                        set_cpu_mode_state (EEEPC_WMI_DEVID_SHE,debugdata - 0x30 ,0);  //mode 0-2:SP,HP,Save
+                four_mode = debugdata - 0x30;
+                four_mode = (four_mode + 1)%4;
+        }
+
+
+
+	return procfs_buffer_size;
+}
+//static int debug_para=0;
+static int debug_para=1;
+module_param(debug_para,bool,S_IRUGO);
+//marstian end
+
+#if 0
+/* Midtom 2010420: proc inter process communication */
+static int write_first(struct file * file,
+			const char __user *buffer, 
+			unsigned long count,
+			void *data)
+{
+	char *kernel_buf;
+	if (count < 0 || count > 1024)
+		return -EFAULT;
+	
+	kernel_buf = kmalloc(count + 1, GFP_KERNEL);
+	if (copy_from_user(kernel_buf, buffer, count)){
+		kfree (kernel_buf);
+		return -EFAULT;
+	} 
+
+	kernel_buf[count]='\0';
+	pr_info ("write_first received data: %s\n", kernel_buf);
+	pr_info ("frist filename %s\n", file->f_dentry->d_iname);
+	pr_info ("write_first data %s\n", (char *)data);
+
+	return count;
+}
+static int  read_first (char *page, char **start,
+				off_t off, int count,
+				int *eof, void *data)
+{
+	int offset =0;
+	char *message = "Hello world:";
+	strcpy(page + offset, message);
+	memcpy(page + offset, data, strlen(data));
+	offset += strlen(data);
+	page[offset] = '\n';
+	offset += 1;
+	return offset;
+}
+#endif
+/* Midtom 20110401: send cpu mode setttings status to user space */
+static void send_settings_result_to_user_space (u32 cpu_mode, u32 auto_mod) 
+{
+	struct sk_buff *skb;
+	struct nlmsghdr *nlh;
+	int	len = 0;
+
+	skb = alloc_skb (NLMSG_SPACE(ASUS_BUF), GFP_KERNEL);
+	nlh = NLMSG_PUT (skb, 0, 0, NLMSG_DONE, NLMSG_SPACE(ASUS_BUF));
+	if ( 1 == auto_mod){
+		if (cpu_mode == 0)
+			len = strncpy (NLMSG_DATA(nlh), "cpu mode changed 10", sizeof("cpu mode changed 10"));
+		else if (cpu_mode == 1)
+			len = strncpy (NLMSG_DATA(nlh), "cpu mode changed 11", sizeof("cpu mode changed 11"));
+		else if (cpu_mode == 2)
+			len = strncpy (NLMSG_DATA(nlh), "cpu mode changed 12", sizeof("cpu mode changed 12"));
+		else if (cpu_mode == 3)
+			len = strncpy (NLMSG_DATA(nlh), "cpu mode changed 13", sizeof("cpu mode changed 13"));
+		else if (cpu_mode == 4)
+			len = strncpy (NLMSG_DATA(nlh), "brightnessdown", sizeof("brightnessdown"));
+		else if (cpu_mode == 5)
+			len = strncpy (NLMSG_DATA(nlh), "brightnessup", sizeof("brightnessup"));
+		else
+			;	
+	}
+	else{
+		if (cpu_mode == 0)
+			len = strncpy (NLMSG_DATA(nlh), "cpu mode changed 0", sizeof("cpu mode changed 0"));
+		else if (cpu_mode == 1)
+			len = strncpy (NLMSG_DATA(nlh), "cpu mode changed 1", sizeof("cpu mode changed 1"));
+		else if (cpu_mode == 2)
+			len = strncpy (NLMSG_DATA(nlh), "cpu mode changed 2", sizeof("cpu mode changed 2"));
+		else if (cpu_mode == 3)
+			len = strncpy (NLMSG_DATA(nlh), "cpu mode changed 3", sizeof("cpu mode changed 3"));
+		else if (cpu_mode == 4)
+			len = strncpy (NLMSG_DATA(nlh), "brightnessdown", sizeof("brightnessdown"));
+		else if (cpu_mode == 5)
+			len = strncpy (NLMSG_DATA(nlh), "brightnessup", sizeof("brightnessup"));
+		else
+			;	
+	}
+
+	NETLINK_CB (skb).dst_group = 1;
+	netlink_broadcast (socket_eeepc_cpu_mode, skb, 0, 1, GFP_KERNEL);
+
+nlmsg_failure: 
+	printk("--debug : Asus nlmsg have passed\n");
+}
+/* Midtom 20110329: Set CPU mode */
+static int set_cpu_mode_state (u32 dev_id, u32 mode, u32 auto_mod)//(parm2:0-control by auto count;   parm3: 0-no auto; 1-auto) marstian
+{
+	pr_info ("##settings cpu state\n");
+
+	static u32 cpu_mode;
+
+//mars	if (mode != 0){
+		cpu_mode = mode;
+//mars	}
+
+	struct bios_args args = {
+			.arg0 = EEEPC_WMI_DEVID_SHE,
+			.arg1 = cpu_mode,
+	};
+
+	struct acpi_buffer input = { (acpi_size)sizeof(struct bios_args), &args};
+	acpi_status status;
+
+	status = wmi_evaluate_method(ASUS_WMI_MGMT_GUID,
+			1, ASUS_WMI_METHODID_DEVS, &input, NULL);
+
+	if (ACPI_FAILURE(status)){
+		pr_info ("Failed to ACPI_FAILURE\n");
+		return status;
+	}
+
+	/* Midtom 2011040: */
+	send_settings_result_to_user_space (cpu_mode, auto_mod);
+
+	/* Midtom 20110329: Get return value 'output' */
+	pr_info ("success, return status: %x,  input: %x\n", status, cpu_mode);
+//mars	if (1 != auto_mod)
+//mars		cpu_mode = (cpu_mode + 1) % 3;
+
+	return status;
+}
+
+static int get_cpu_mode_state (u32 dev_id,struct asus_wmi *asus) 
+{
+	static u32 ctrl_param;
+	acpi_status status;
+
+	status = asus_wmi_get_devstate(asus,EEEPC_WMI_DEVID_SHE, &ctrl_param);
+
+	if (ACPI_FAILURE(status))
+		return -1;
+	else
+		return ctrl_param & 0xFF;
+
+}
+static int	SHE_auto_mode (void) //marstian
+{
+	static int AC_status=0;
+	AC_status=	marstian_acpi_ac_show();
+	pr_info ("marstian_powrstatus: %d\n", AC_status);
+	if (1 == AC_status) //off-line
+			set_cpu_mode_state (EEEPC_WMI_DEVID_SHE, 2,1); 
+	else if (2 == AC_status)//on-line
+			set_cpu_mode_state (EEEPC_WMI_DEVID_SHE, 1,1); 
+	return 0;
+
+}
+static int select_cpu_mode_state (u32 dev_id,u32 hand_set)//marstian
+{
+//	static u32 four_mode;
+	if (hand_set != 0)
+	{
+		set_cpu_mode_state (EEEPC_WMI_DEVID_SHE, hand_set,1); 
+		four_mode = 3 ;
+	}
+	else if (four_mode  == 3)
+		SHE_auto_mode (); //marstian
+	else
+		set_cpu_mode_state (dev_id, four_mode,0);  
+		
+	four_mode = (four_mode+1) % 4 ;
+	
+}
+//end linpus
 
 /* Helper for special devices with magic return codes */
 static int asus_wmi_get_devstate_bits(struct asus_wmi *asus,
@@ -1233,6 +1486,25 @@ static void asus_wmi_notify(u32 value, void *context)
 
 	code = obj->integer.value;
 	orig_code = code;
+		/* Midtom 20110329: print code */
+		if (code == NOTIFY_CHANAGING_CPU_MODE){
+			pr_info ("Fn + space pressed!\n");
+			//set_cpu_mode_policy ();
+			select_cpu_mode_state (EEEPC_WMI_DEVID_SHE,0);  
+			status = get_cpu_mode_state (EEEPC_WMI_DEVID_SHE,asus);
+		    pr_info("DSTS Read cpu mode status 0x%x\n", status);
+		}
+
+		/* AC plug out */
+		if (code == NOTIFY_AC_PLUG_OUT){
+			select_cpu_mode_state (EEEPC_WMI_DEVID_SHE,2);  
+		}
+
+		/* AC plug in */
+		if (code == NOTIFY_AC_PLUG_IN){
+			select_cpu_mode_state (EEEPC_WMI_DEVID_SHE,1);  
+		}
+		//end Midtom
 
 	if (asus->driver->key_filter) {
 		asus->driver->key_filter(asus->driver, &code, &key_value,
@@ -1830,12 +2102,56 @@ static int __init asus_wmi_init(void)
 	}
 
 	pr_info("ASUS WMI generic driver loaded");
+	/* Midtom 20110401: create socket */
+	socket_eeepc_cpu_mode = netlink_kernel_create (&init_net, NETLINK_LITE_HOTKEY, 0, NULL, NULL, THIS_MODULE);
+	if (NULL == socket_eeepc_cpu_mode){
+		printk ("## Failed to create socket eeepc_cpu mode");
+	}
+	
+	SHE_auto_mode (); //marstian
+	if(debug_para){//marstian
+	#if 1
+		/* Midtom 20110420: create proc file to communicate with user space */
+		example_dir = proc_mkdir ("eeepc_example", NULL); //create a directory
+		if (example_dir == NULL)
+			return -ENOMEM;
+	
+		first_file = create_proc_entry ("debug_first", 0644, example_dir);
+		if (first_file == NULL){
+			remove_proc_entry ("eeepc_example", NULL);
+			return -ENOMEM;
+		}
+	
+		first_file->data = kmalloc (strlen("first file private data"), GFP_KERNEL);
+		strcpy(first_file->data, "first file private data");
+		first_file->read_proc = read_first;
+		first_file->write_proc = write_first;
+		first_file->mode 	 = S_IRWXU | S_IRWXG | S_IRWXO;
+		first_file->uid 	 = 0;
+		first_file->gid 	 = 0;
+		first_file->size 	 = 37;
+		//first_file->owner = THIS_MODULE;
+		//example_dir->owner = THIS_MODULE;
+		printk(KERN_INFO "/proc/%s created\n", first_file);
+		/* end */
+	#endif
+	}
 	return 0;
 }
 
 static void __exit asus_wmi_exit(void)
 {
 	pr_info("ASUS WMI generic driver unloaded");
+	
+	if (socket_eeepc_cpu_mode){ //marstian
+	netlink_kernel_release(socket_eeepc_cpu_mode);
+	}
+	/* Midtom 20110420: free proc data */
+if(debug_para){//marstian
+	kfree (first_file->data);
+	remove_proc_entry ("debug_first", example_dir);
+	remove_proc_entry ("eeepc_example", NULL);
+}
 }
 
 module_init(asus_wmi_init);

@@ -25,6 +25,9 @@
 #define NETLINK_SCSITRANSPORT	18	/* SCSI Transports */
 #define NETLINK_ECRYPTFS	19
 #define NETLINK_RDMA		20
+#define NETLINK_LITE_HOTKEY		25 //marstian@linpus.com
+#define NETLINK_LITE_ATKBD		26 //marstian@linpus.com
+
 
 #define MAX_LINKS 32		
 

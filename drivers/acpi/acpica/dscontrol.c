@@ -212,6 +212,11 @@ acpi_ds_exec_end_control_op(struct acpi_walk_state * walk_state,
 			 * loop does not implement a timeout.
 			 */
 			control_state->control.loop_count++;
+			if ((control_state->control.loop_count > 1) &&
+			    (control_state->control.loop_count % 0xffff == 0))
+				printk("ACPI: While loop taking a really long time. loop_count=0x%x\n",
+				       control_state->control.loop_count);
+
 			if (control_state->control.loop_count >
 			    ACPI_MAX_LOOP_ITERATIONS) {
 				status = AE_AML_INFINITE_LOOP;

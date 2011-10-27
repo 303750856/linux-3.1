@@ -52,10 +52,8 @@ ACPI_MODULE_NAME("processor_thermal");
  * _any_ cpufreq driver and not only the acpi-cpufreq driver.
  */
 
-#define CPUFREQ_THERMAL_MIN_STEP 0
-#define CPUFREQ_THERMAL_MAX_STEP 3
 
-static DEFINE_PER_CPU(unsigned int, cpufreq_thermal_reduction_pctg);
+static DEFINE_PER_CPU(unsigned int, cpufreq_thermal_limit_state);
 static unsigned int acpi_thermal_cpufreq_is_init = 0;
 
 static int cpu_has_cpufreq(unsigned int cpu)
@@ -70,19 +68,19 @@ static int acpi_thermal_cpufreq_notifier(struct notifier_block *nb,
 					 unsigned long event, void *data)
 {
 	struct cpufreq_policy *policy = data;
-	unsigned long max_freq = 0;
+	int state = per_cpu(cpufreq_thermal_limit_state, policy->cpu);
+	struct cpufreq_frequency_table *table;
 
 	if (event != CPUFREQ_ADJUST)
-		goto out;
+		return 0;
 
-	max_freq = (
-	    policy->cpuinfo.max_freq *
-	    (100 - per_cpu(cpufreq_thermal_reduction_pctg, policy->cpu) * 20)
-	) / 100;
+	table = cpufreq_frequency_get_table(policy->cpu);
 
-	cpufreq_verify_within_limits(policy, 0, max_freq);
+	if (!table)
+		return 0;
 
-      out:
+	cpufreq_verify_within_limits(policy, 0, table[state].frequency);
+
 	return 0;
 }
 
@@ -92,10 +90,21 @@ static struct notifier_block acpi_thermal_cpufreq_notifier_block = {
 
 static int cpufreq_get_max_state(unsigned int cpu)
 {
+	int count = 0;
+	struct cpufreq_frequency_table *table;
+
 	if (!cpu_has_cpufreq(cpu))
 		return 0;
 
-	return CPUFREQ_THERMAL_MAX_STEP;
+	table = cpufreq_frequency_get_table(cpu);
+
+	if (!table)
+		return 0;
+
+	while (table[count].frequency != CPUFREQ_TABLE_END)
+		count++;
+
+	return count;
 }
 
 static int cpufreq_get_cur_state(unsigned int cpu)
@@ -103,7 +112,7 @@ static int cpufreq_get_cur_state(unsigned int cpu)
 	if (!cpu_has_cpufreq(cpu))
 		return 0;
 
-	return per_cpu(cpufreq_thermal_reduction_pctg, cpu);
+	return per_cpu(cpufreq_thermal_limit_state, cpu);
 }
 
 static int cpufreq_set_cur_state(unsigned int cpu, int state)
@@ -111,7 +120,7 @@ static int cpufreq_set_cur_state(unsigned int cpu, int state)
 	if (!cpu_has_cpufreq(cpu))
 		return 0;
 
-	per_cpu(cpufreq_thermal_reduction_pctg, cpu) = state;
+	per_cpu(cpufreq_thermal_limit_state, cpu) = state;
 	cpufreq_update_policy(cpu);
 	return 0;
 }
@@ -122,7 +131,7 @@ void acpi_thermal_cpufreq_init(void)
 
 	for (i = 0; i < nr_cpu_ids; i++)
 		if (cpu_present(i))
-			per_cpu(cpufreq_thermal_reduction_pctg, i) = 0;
+			per_cpu(cpufreq_thermal_limit_state, i) = 0;
 
 	i = cpufreq_register_notifier(&acpi_thermal_cpufreq_notifier_block,
 				      CPUFREQ_POLICY_NOTIFIER);
@@ -170,15 +179,11 @@ int acpi_processor_get_limit_info(struct acpi_processor *pr)
 	return 0;
 }
 
-/* thermal coolign device callbacks */
+/* thermal cooling device callbacks */
 static int acpi_processor_max_state(struct acpi_processor *pr)
 {
 	int max_state = 0;
 
-	/*
-	 * There exists four states according to
-	 * cpufreq_thermal_reduction_ptg. 0, 1, 2, 3
-	 */
 	max_state += cpufreq_get_max_state(pr->id);
 	if (pr->flags.throttling)
 		max_state += (pr->throttling.state_count -1);

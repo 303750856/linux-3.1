@@ -505,8 +505,10 @@ static int rtsx_control_thread(void *__dev)
 		 * the maximum known LUN
 		 */
 		else if (chip->srb->device->id) {
+			/* mars marked for boot messages
 			printk(KERN_ERR "Bad target number (%d:%d)\n",
 				  chip->srb->device->id, chip->srb->device->lun);
+			*/
 			chip->srb->result = DID_BAD_TARGET << 16;
 		}
 

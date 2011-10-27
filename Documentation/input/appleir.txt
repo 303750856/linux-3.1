@@ -1,0 +1,46 @@
+Apple IR receiver Driver (appleir)
+----------------------------------
+	Copyright (C) 2009 Bastien Nocera <hadess@hadess.net>
+
+The appleir driver is a kernel input driver to handle Apple's IR
+receivers (and associated remotes) in the kernel.
+
+The driver is an input driver which only handles "official" remotes
+as built and sold by Apple.
+
+Authors
+-------
+
+James McKenzie (original driver)
+Alex Karpenko (05ac:8242 support)
+Greg Kroah-Hartman (cleanups and original submission)
+Bastien Nocera (further cleanups, brushed metal "enter"
+button support and suspend support)
+
+Supported hardware
+------------------
+
+- All Apple laptops and desktops from 2005 onwards, except:
+  - the unibody Macbook (2009)
+  - Mac Pro (all versions)
+- Apple TV (all revisions prior to September 2010)
+
+The remote will only support the 6 (old white) or 7 (brushed metal) buttons
+of the remotes as sold by Apple. See the next section if you want to use
+other remotes or want to use lirc with the device instead of the kernel driver.
+
+Using lirc (native) instead of the kernel driver
+------------------------------------------------
+
+First, you will need to disable the kernel driver for the receiver.
+
+This can be achieved by passing quirks to the usbhid driver.
+The quirk line would be:
+usbhid.quirks=0x05ac:0x8242:0x40000010
+
+With 0x05ac being the vendor ID (Apple, you shouldn't need to change this)
+With 0x8242 being the product ID (check the output of lsusb for your hardware)
+And 0x10 being "HID_QUIRK_HIDDEV_FORCE" and 0x40000000 being "HID_QUIRK_NO_IGNORE"
+
+This should force the creation of a hiddev device for the receiver, and
+make it usable under lirc.
