@@ -534,32 +534,41 @@ static irqreturn_t atkbd_interrupt(struct serio *serio, unsigned char data,
 		input_event(dev, EV_MSC, MSC_SCAN, code);
 /*********tomsun 2011-02-21****************/
 	if (!atkbd->release){
-	if (keycode == 114 || keycode == 113 || keycode == 115 || keycode == 163 || keycode == 164 || keycode == 165 || keycode == 166 || keycode == 58 || keycode == 69 || keycode ==70){
-	//	schedule_timeout(timeout); //marstian
-	#if  1
-	new_jiffies=jiffies;//mars
-	//new_jiffies=get_jiffies_64();//mars
-	if ( new_jiffies - old_jiffies > 200 ){//mars
-		old_jiffies = new_jiffies ;  //mars
-		skb = alloc_skb(NLMSG_SPACE(MAX_CAP), GFP_ATOMIC);
-		if (!skb){
-			printk (KERN_ERR"@@@Tomsun alloc skb failer\n");
-			goto oom;
+		printk("ssssssssss %d sssssssssss\n",keycode);
+		if (keycode == 114 || keycode == 113 || keycode == 115 || \
+			keycode == 163 || keycode == 164 || keycode == 165 || \
+			keycode == 166 || keycode == 58 || keycode == 69 || \
+			keycode ==70 || keycode == 224 || keycode == 225 || \
+			keycode ==227 )
+		{
+			//	schedule_timeout(timeout); //marstian
+			#if  1
+			new_jiffies=jiffies;//mars
+			//new_jiffies=get_jiffies_64();//mars
+			if ( new_jiffies - old_jiffies > 200 ){//mars
+				old_jiffies = new_jiffies ;  //mars
+				skb = alloc_skb(NLMSG_SPACE(MAX_CAP), GFP_ATOMIC);
+				if (!skb){
+					printk (KERN_ERR"@@@Tomsun alloc skb failer\n");
+					goto oom;
+				}
+				nlh = NLMSG_PUT(skb, 0, 0, NLMSG_DONE, NLMSG_SPACE(MAX_CAP));
+				sprintf(key_str, "%d", keycode);
+				len = strncpy(NLMSG_DATA(nlh), key_str, 4);
+				NETLINK_CB(skb).dst_group =1;
+				if (acer_sock_key == NULL)
+					printk(KERN_ERR"@@@@@@@@ Tomsun acer_sock_key== NULL\n");
+				else
+					netlink_broadcast(acer_sock_key, skb, 0, 1, GFP_KERNEL);
+			}//mars
+			#endif
+			if ( atkbd_netlink_on){
+				printk(" test for atkbd_netlink_on \n");
+				if (keycode == 114 || keycode == 113 || keycode == 115 || keycode == 163 || keycode == 164 || keycode == 165 || keycode == 166 || keycode == 70){
+					return IRQ_HANDLED;
+				}
+			}
 		}
-		nlh = NLMSG_PUT(skb, 0, 0, NLMSG_DONE, NLMSG_SPACE(MAX_CAP));
-		sprintf(key_str, "%d", keycode);
-		len = strncpy(NLMSG_DATA(nlh), key_str, 4);
-		NETLINK_CB(skb).dst_group =1;
-		if (acer_sock_key == NULL)
-			printk(KERN_ERR"@@@@@@@@ Tomsun acer_sock_key== NULL\n");
-		else
-			netlink_broadcast(acer_sock_key, skb, 0, 1, GFP_KERNEL);
-	}//mars
-	#endif
-		if (keycode == 114 || keycode == 113 || keycode == 115 || keycode == 163 || keycode == 164 || keycode == 165 || keycode == 166 || keycode == 70){
-			return IRQ_HANDLED;
-		}
-	}
 	}
 /*****************end**********************/
 oom:
