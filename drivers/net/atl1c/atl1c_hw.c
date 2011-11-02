@@ -32,11 +32,11 @@
 int atl1c_check_eeprom_exist(struct atl1c_hw *hw)
 {
 	u32 data;
-
+	
 	AT_READ_REG(hw, REG_TWSI_DEBUG, &data);
 	if (data & TWSI_DEBUG_DEV_EXIST)
 		return 1;
-
+	
 	AT_READ_REG(hw, REG_MASTER_CTRL, &data);
 	if (data & MASTER_CTRL_OTP_SEL)
 		return 1;
@@ -76,38 +76,36 @@ static int atl1c_get_permanent_address(struct atl1c_hw *hw)
 	u32 wol_data;
 	u8  eth_addr[ETH_ALEN];
 	u16 phy_data;
-	bool raise_vol = false;
+	u32 raise_vol = 0;
+	
 
 	/* init */
 	addr[0] = addr[1] = 0;
 	AT_READ_REG(hw, REG_OTP_CTRL, &otp_ctrl_data);
 	if (atl1c_check_eeprom_exist(hw)) {
-		if (hw->nic_type == athr_l1c || hw->nic_type == athr_l2c) {
-			/* Enable OTP CLK */
+		/* Enable OTP CLK */
+		if (hw->nic_type == athr_l1c || hw->nic_type == athr_l2c_b) {
 			if (!(otp_ctrl_data & OTP_CTRL_CLK_EN)) {
 				otp_ctrl_data |= OTP_CTRL_CLK_EN;
 				AT_WRITE_REG(hw, REG_OTP_CTRL, otp_ctrl_data);
-				AT_WRITE_FLUSH(hw);
 				msleep(1);
 			}
 		}
-
-		if (hw->nic_type == athr_l2c_b ||
-		    hw->nic_type == athr_l2c_b2 ||
-		    hw->nic_type == athr_l1d) {
+		if (hw->nic_type == athr_l2c_b || hw->nic_type == athr_l2c_b2 ||
+			hw->nic_type == athr_l1d || hw->nic_type == athr_l1d_2) {
 			atl1c_write_phy_reg(hw, MII_DBG_ADDR, 0x00);
-			if (atl1c_read_phy_reg(hw, MII_DBG_DATA, &phy_data))
+			if (atl1c_read_phy_reg(hw, MII_DBG_DATA, &phy_data) != 0)
 				goto out;
 			phy_data &= 0xFF7F;
 			atl1c_write_phy_reg(hw, MII_DBG_DATA, phy_data);
-
+			
 			atl1c_write_phy_reg(hw, MII_DBG_ADDR, 0x3B);
-			if (atl1c_read_phy_reg(hw, MII_DBG_DATA, &phy_data))
+			if (atl1c_read_phy_reg(hw, MII_DBG_DATA, &phy_data) != 0)
 				goto out;
 			phy_data |= 0x8;
 			atl1c_write_phy_reg(hw, MII_DBG_DATA, phy_data);
 			udelay(20);
-			raise_vol = true;
+			raise_vol = 1;	
 		}
 		/* close open bit of ReadOnly*/
 		AT_READ_REG(hw, REG_LTSSM_ID_CTRL, &ltssm_ctrl_data);
@@ -115,6 +113,7 @@ static int atl1c_get_permanent_address(struct atl1c_hw *hw)
 		AT_WRITE_REG(hw, REG_LTSSM_ID_CTRL, ltssm_ctrl_data);
 
 		/* clear any WOL settings */
+		AT_WRITE_REG(hw, REG_PM_CTRLSTAT, 0);
 		AT_WRITE_REG(hw, REG_WOL_CTRL, 0);
 		AT_READ_REG(hw, REG_WOL_CTRL, &wol_data);
 
@@ -129,34 +128,32 @@ static int atl1c_get_permanent_address(struct atl1c_hw *hw)
 				break;
 		}
 		if (i >= AT_TWSI_EEPROM_TIMEOUT)
-			return -1;
+			return AT_ERR_TIMEOUT;
 	}
-	/* Disable OTP_CLK */
+	/* Disable OTP_CLK */	
 	if ((hw->nic_type == athr_l1c || hw->nic_type == athr_l2c)) {
 		otp_ctrl_data &= ~OTP_CTRL_CLK_EN;
 		AT_WRITE_REG(hw, REG_OTP_CTRL, otp_ctrl_data);
 		msleep(1);
 	}
 	if (raise_vol) {
-		if (hw->nic_type == athr_l2c_b ||
-		    hw->nic_type == athr_l2c_b2 ||
-		    hw->nic_type == athr_l1d ||
-		    hw->nic_type == athr_l1d_2) {
+		if (hw->nic_type == athr_l2c_b || hw->nic_type == athr_l2c_b2 ||
+			hw->nic_type == athr_l1d || hw->nic_type == athr_l1d_2) {
 			atl1c_write_phy_reg(hw, MII_DBG_ADDR, 0x00);
-			if (atl1c_read_phy_reg(hw, MII_DBG_DATA, &phy_data))
+			if (atl1c_read_phy_reg(hw, MII_DBG_DATA, &phy_data) != 0)
 				goto out;
 			phy_data |= 0x80;
 			atl1c_write_phy_reg(hw, MII_DBG_DATA, phy_data);
-
+			
 			atl1c_write_phy_reg(hw, MII_DBG_ADDR, 0x3B);
-			if (atl1c_read_phy_reg(hw, MII_DBG_DATA, &phy_data))
+			if (atl1c_read_phy_reg(hw, MII_DBG_DATA, &phy_data) != 0)
 				goto out;
 			phy_data &= 0xFFF7;
 			atl1c_write_phy_reg(hw, MII_DBG_DATA, phy_data);
 			udelay(20);
 		}
-	}
 
+	}	
 	/* maybe MAC-address is from BIOS */
 	AT_READ_REG(hw, REG_MAC_STA_ADDR, &addr[0]);
 	AT_READ_REG(hw, REG_MAC_STA_ADDR + 4, &addr[1]);
@@ -167,9 +164,13 @@ static int atl1c_get_permanent_address(struct atl1c_hw *hw)
 		memcpy(hw->perm_mac_addr, eth_addr, ETH_ALEN);
 		return 0;
 	}
-
 out:
-	return -1;
+	return AT_ERR_EEPROM;
+}
+
+bool atl1c_write_eeprom(struct atl1c_hw *hw, u32 offset, u32 value)
+{
+	return true;
 }
 
 bool atl1c_read_eeprom(struct atl1c_hw *hw, u32 offset, u32 *p_value)
@@ -185,9 +186,9 @@ bool atl1c_read_eeprom(struct atl1c_hw *hw, u32 offset, u32 *p_value)
 
 	AT_READ_REG(hw, REG_OTP_CTRL, &otp_ctrl_data);
 	if (!(otp_ctrl_data & OTP_CTRL_CLK_EN))
-		AT_WRITE_REG(hw, REG_OTP_CTRL,
+		AT_WRITE_REG(hw, REG_OTP_CTRL, 
 				(otp_ctrl_data | OTP_CTRL_CLK_EN));
-
+	
 	AT_WRITE_REG(hw, REG_EEPROM_DATA_LO, 0);
 	control = (offset & EEPROM_CTRL_ADDR_MASK) << EEPROM_CTRL_ADDR_SHIFT;
 	AT_WRITE_REG(hw, REG_EEPROM_CTRL, control);
@@ -207,7 +208,7 @@ bool atl1c_read_eeprom(struct atl1c_hw *hw, u32 offset, u32 *p_value)
 	}
 	if (!(otp_ctrl_data & OTP_CTRL_CLK_EN))
 		AT_WRITE_REG(hw, REG_OTP_CTRL, otp_ctrl_data);
-
+	
 	return ret;
 }
 /*
@@ -220,9 +221,16 @@ int atl1c_read_mac_addr(struct atl1c_hw *hw)
 	int err = 0;
 
 	err = atl1c_get_permanent_address(hw);
-	if (err)
-		random_ether_addr(hw->perm_mac_addr);
+	if (err) {
+        hw->perm_mac_addr[0] = 0x00;
+        hw->perm_mac_addr[1] = 0x13;
+        hw->perm_mac_addr[2] = 0x74;
+        hw->perm_mac_addr[3] = 0x00;
+        hw->perm_mac_addr[4] = 0x5c;
+        hw->perm_mac_addr[5] = 0x38;
+    }
 
+//		return AT_ERR_EEPROM;
 	memcpy(hw->mac_addr, hw->perm_mac_addr, sizeof(hw->perm_mac_addr));
 	return 0;
 }
@@ -264,7 +272,7 @@ void atl1c_hash_set(struct atl1c_hw *hw, u32 hash_value)
 	 * bit BitArray[hash_value]. So we figure out what register
 	 * the bit is in, read it, OR in the new bit, then write
 	 * back the new value.  The register is determined by the
-	 * upper bit of the hash value and the bit within that
+	 * upper 7 bits of the hash value and the bit within that
 	 * register are determined by the lower 5 bits of the value.
 	 */
 	hash_reg = (hash_value >> 31) & 0x1;
@@ -293,18 +301,21 @@ int atl1c_read_phy_reg(struct atl1c_hw *hw, u16 reg_addr, u16 *phy_data)
 
 	AT_WRITE_REG(hw, REG_MDIO_CTRL, val);
 
+	wmb();
+
 	for (i = 0; i < MDIO_WAIT_TIMES; i++) {
 		udelay(2);
 		AT_READ_REG(hw, REG_MDIO_CTRL, &val);
 		if (!(val & (MDIO_START | MDIO_BUSY)))
 			break;
+		wmb();
 	}
 	if (!(val & (MDIO_START | MDIO_BUSY))) {
 		*phy_data = (u16)val;
 		return 0;
 	}
 
-	return -1;
+	return AT_ERR_PHY;
 }
 
 /*
@@ -324,18 +335,20 @@ int atl1c_write_phy_reg(struct atl1c_hw *hw, u32 reg_addr, u16 phy_data)
 	       MDIO_CLK_25_4 << MDIO_CLK_SEL_SHIFT;
 
 	AT_WRITE_REG(hw, REG_MDIO_CTRL, val);
+	wmb();
 
 	for (i = 0; i < MDIO_WAIT_TIMES; i++) {
 		udelay(2);
 		AT_READ_REG(hw, REG_MDIO_CTRL, &val);
 		if (!(val & (MDIO_START | MDIO_BUSY)))
 			break;
+		wmb();
 	}
 
 	if (!(val & (MDIO_START | MDIO_BUSY)))
 		return 0;
 
-	return -1;
+	return AT_ERR_PHY;
 }
 
 /*
@@ -345,38 +358,78 @@ int atl1c_write_phy_reg(struct atl1c_hw *hw, u32 reg_addr, u16 phy_data)
  */
 static int atl1c_phy_setup_adv(struct atl1c_hw *hw)
 {
-	u16 mii_adv_data = ADVERTISE_DEFAULT_CAP & ~ADVERTISE_ALL;
+	u16 mii_adv_data = ADVERTISE_DEFAULT_CAP & ~ADVERTISE_SPEED_MASK;
 	u16 mii_giga_ctrl_data = GIGA_CR_1000T_DEFAULT_CAP &
 				~GIGA_CR_1000T_SPEED_MASK;
+	u16 tmp_data;
 
-	if (hw->autoneg_advertised & ADVERTISED_10baseT_Half)
-		mii_adv_data |= ADVERTISE_10HALF;
-	if (hw->autoneg_advertised & ADVERTISED_10baseT_Full)
-		mii_adv_data |= ADVERTISE_10FULL;
-	if (hw->autoneg_advertised & ADVERTISED_100baseT_Half)
-		mii_adv_data |= ADVERTISE_100HALF;
-	if (hw->autoneg_advertised & ADVERTISED_100baseT_Full)
-		mii_adv_data |= ADVERTISE_100FULL;
-
-	if (hw->autoneg_advertised & ADVERTISED_Autoneg)
-		mii_adv_data |= ADVERTISE_10HALF  | ADVERTISE_10FULL |
-				ADVERTISE_100HALF | ADVERTISE_100FULL;
-
-	if (hw->link_cap_flags & ATL1C_LINK_CAP_1000M) {
-		if (hw->autoneg_advertised & ADVERTISED_1000baseT_Half)
-			mii_giga_ctrl_data |= ADVERTISE_1000HALF;
-		if (hw->autoneg_advertised & ADVERTISED_1000baseT_Full)
-			mii_giga_ctrl_data |= ADVERTISE_1000FULL;
-		if (hw->autoneg_advertised & ADVERTISED_Autoneg)
-			mii_giga_ctrl_data |= ADVERTISE_1000HALF |
-					ADVERTISE_1000FULL;
+	if (hw->autoneg_advertised & ADVERTISE_10_HALF)
+		mii_adv_data |= ADVERTISE_10T_HD_CAPS;
+	if (hw->autoneg_advertised & ADVERTISE_10_FULL)
+		mii_adv_data |= ADVERTISE_10T_FD_CAPS;
+	if (hw->autoneg_advertised & ADVERTISE_100_HALF)
+		mii_adv_data |= ADVERTISE_100TX_HD_CAPS;
+	if (hw->autoneg_advertised & ADVERTISE_100_FULL)
+		mii_adv_data |= ADVERTISE_100TX_FD_CAPS;
+	if (hw->link_cap_flags & LINK_CAP_SPEED_1000) {
+		if (hw->autoneg_advertised & ADVERTISE_1000_HALF)
+			mii_giga_ctrl_data |= GIGA_CR_1000T_HD_CAPS;
+		if (hw->autoneg_advertised & ADVERTISE_1000_FULL)
+			mii_giga_ctrl_data |= GIGA_CR_1000T_FD_CAPS;
 	}
-
+	if (hw->nic_type == athr_l2c_b2) {
+		atl1c_read_phy_reg(hw, MII_BMSR, &tmp_data);
+		tmp_data |= 0x02;
+		atl1c_write_phy_reg(hw, 0x3C, tmp_data);
+	}	
 	if (atl1c_write_phy_reg(hw, MII_ADVERTISE, mii_adv_data) != 0 ||
-	    atl1c_write_phy_reg(hw, MII_CTRL1000, mii_giga_ctrl_data) != 0)
-		return -1;
+	    atl1c_write_phy_reg(hw, MII_GIGA_CR, mii_giga_ctrl_data) != 0)
+		return AT_ERR_PHY_SPEED;
 	return 0;
 }
+
+/*
+ * Resets the PHY and make all config validate
+ *
+ * hw - Struct containing variables accessed by shared code
+ *
+ * Sets bit 15 and 12 of the MII control regiser (for F001 bug)
+ */
+#if 0
+int atl1c_phy_commit(struct atl1c_hw *hw)
+{
+	struct atl1c_adapter *adapter = (struct atl1c_adapter *)hw->adapter;
+	struct pci_dev *pdev = adapter->pdev;
+	int ret_val;
+	u16 phy_data;
+
+	phy_data = MII_CR_RESET | MII_CR_AUTO_NEG_EN | MII_CR_RESTART_AUTO_NEG;
+
+	ret_val = atl1c_write_phy_reg(hw, MII_BMCR, phy_data);
+	if (ret_val) {
+		u32 val;
+		int i;
+		/**************************************
+		 * pcie serdes link may be down !
+		 **************************************/
+		for (i = 0; i < 25; i++) {
+			msleep(1);
+			val = AT_READ_REG(hw, REG_MDIO_CTRL);
+			if (!(val & (MDIO_START | MDIO_BUSY)))
+				break;
+		}
+
+		if (0 != (val & (MDIO_START | MDIO_BUSY))) {
+			dev_err(&pdev->dev,
+				"pcie linkdown at least for 25ms\n");
+			return ret_val;
+		}
+
+		dev_err(&pdev->dev, "pcie linkup after %d ms\n", i);
+	}
+	return 0;
+}
+#endif
 
 void atl1c_phy_disable(struct atl1c_hw *hw)
 {
@@ -388,57 +441,41 @@ static void atl1c_phy_magic_data(struct atl1c_hw *hw)
 {
 	u16 data;
 
-	data = ANA_LOOP_SEL_10BT | ANA_EN_MASK_TB | ANA_EN_10BT_IDLE |
-		((1 & ANA_INTERVAL_SEL_TIMER_MASK) <<
-		ANA_INTERVAL_SEL_TIMER_SHIFT);
+	atl1c_write_phy_reg(hw, MII_DBG_ADDR, 0x12);
+	atl1c_write_phy_reg(hw, MII_DBG_DATA, 0x4C04);
 
-	atl1c_write_phy_reg(hw, MII_DBG_ADDR, MII_ANA_CTRL_18);
+	atl1c_write_phy_reg(hw, MII_DBG_ADDR, 0x05);
+	atl1c_write_phy_reg(hw, MII_DBG_DATA, 0x2C46);
+
+	atl1c_write_phy_reg(hw, MII_DBG_ADDR, 0x36);
+	atl1c_write_phy_reg(hw, MII_DBG_DATA, 0xE12C);
+
+	atl1c_write_phy_reg(hw, MII_DBG_ADDR, 0x04);
+	atl1c_write_phy_reg(hw, MII_DBG_DATA, 0x88BB);
+
+	atl1c_write_phy_reg(hw, MII_DBG_ADDR, 0x00);
+	atl1c_write_phy_reg(hw, MII_DBG_DATA, 0x02EF);
+	
+	atl1c_write_phy_reg(hw, MII_DBG_ADDR, 0x36);
+	if (atl1c_read_phy_reg(hw, MII_DBG_DATA, &data) != 0)
+        	return;
+	data |= 0x80;
 	atl1c_write_phy_reg(hw, MII_DBG_DATA, data);
-
-	data = (2 & ANA_SERDES_CDR_BW_MASK) | ANA_MS_PAD_DBG |
-		ANA_SERDES_EN_DEEM | ANA_SERDES_SEL_HSP | ANA_SERDES_EN_PLL |
-		ANA_SERDES_EN_LCKDT;
-
-	atl1c_write_phy_reg(hw, MII_DBG_ADDR, MII_ANA_CTRL_5);
-	atl1c_write_phy_reg(hw, MII_DBG_DATA, data);
-
-	data = (44 & ANA_LONG_CABLE_TH_100_MASK) |
-		((33 & ANA_SHORT_CABLE_TH_100_MASK) <<
-		ANA_SHORT_CABLE_TH_100_SHIFT) | ANA_BP_BAD_LINK_ACCUM |
-		ANA_BP_SMALL_BW;
-
-	atl1c_write_phy_reg(hw, MII_DBG_ADDR, MII_ANA_CTRL_54);
-	atl1c_write_phy_reg(hw, MII_DBG_DATA, data);
-
-	data = (11 & ANA_IECHO_ADJ_MASK) | ((11 & ANA_IECHO_ADJ_MASK) <<
-		ANA_IECHO_ADJ_2_SHIFT) | ((8 & ANA_IECHO_ADJ_MASK) <<
-		ANA_IECHO_ADJ_1_SHIFT) | ((8 & ANA_IECHO_ADJ_MASK) <<
-		ANA_IECHO_ADJ_0_SHIFT);
-
-	atl1c_write_phy_reg(hw, MII_DBG_ADDR, MII_ANA_CTRL_4);
-	atl1c_write_phy_reg(hw, MII_DBG_DATA, data);
-
-	data = ANA_RESTART_CAL | ((7 & ANA_MANUL_SWICH_ON_MASK) <<
-		ANA_MANUL_SWICH_ON_SHIFT) | ANA_MAN_ENABLE |
-		ANA_SEL_HSP | ANA_EN_HB | ANA_OEN_125M;
-
-	atl1c_write_phy_reg(hw, MII_DBG_ADDR, MII_ANA_CTRL_0);
-	atl1c_write_phy_reg(hw, MII_DBG_DATA, data);
-
+		
 	if (hw->ctrl_flags & ATL1C_HIB_DISABLE) {
-		atl1c_write_phy_reg(hw, MII_DBG_ADDR, MII_ANA_CTRL_41);
+		atl1c_write_phy_reg(hw, MII_DBG_ADDR, 0x29);
 		if (atl1c_read_phy_reg(hw, MII_DBG_DATA, &data) != 0)
 			return;
-		data &= ~ANA_TOP_PS_EN;
+		data &= 0x7FFF;
 		atl1c_write_phy_reg(hw, MII_DBG_DATA, data);
-
-		atl1c_write_phy_reg(hw, MII_DBG_ADDR, MII_ANA_CTRL_11);
+	
+		atl1c_write_phy_reg(hw, MII_DBG_ADDR, 0xB);
 		if (atl1c_read_phy_reg(hw, MII_DBG_DATA, &data) != 0)
 			return;
-		data &= ~ANA_PS_HIB_EN;
+		data &= 0x7FFF;
 		atl1c_write_phy_reg(hw, MII_DBG_DATA, data);
 	}
-}
+}	
 
 int atl1c_phy_reset(struct atl1c_hw *hw)
 {
@@ -451,7 +488,7 @@ int atl1c_phy_reset(struct atl1c_hw *hw)
 
 	if (hw->ctrl_flags & ATL1C_HIB_DISABLE)
 		phy_ctrl_data &= ~GPHY_CTRL_HIB_EN;
-
+ 
 	AT_WRITE_REG(hw, REG_GPHY_CTRL, phy_ctrl_data);
 	AT_WRITE_FLUSH(hw);
 	msleep(40);
@@ -464,31 +501,27 @@ int atl1c_phy_reset(struct atl1c_hw *hw)
 		atl1c_write_phy_reg(hw, MII_DBG_ADDR, 0x0A);
 		atl1c_read_phy_reg(hw, MII_DBG_DATA, &phy_data);
 		atl1c_write_phy_reg(hw, MII_DBG_DATA, phy_data & 0xDFFF);
+		
 	}
-
-	if (hw->nic_type == athr_l2c_b ||
-	    hw->nic_type == athr_l2c_b2 ||
-	    hw->nic_type == athr_l1d ||
-	    hw->nic_type == athr_l1d_2) {
+	if (hw->nic_type == athr_l2c_b || hw->nic_type == athr_l2c_b2 ||
+		hw->nic_type == athr_l1d || hw->nic_type == athr_l1d_2) {	
 		atl1c_write_phy_reg(hw, MII_DBG_ADDR, 0x3B);
 		atl1c_read_phy_reg(hw, MII_DBG_DATA, &phy_data);
 		atl1c_write_phy_reg(hw, MII_DBG_DATA, phy_data & 0xFFF7);
 		msleep(20);
 	}
-	if (hw->nic_type == athr_l1d) {
+	if (hw->nic_type == athr_l1d || hw->nic_type == athr_l1d_2) {
 		atl1c_write_phy_reg(hw, MII_DBG_ADDR, 0x29);
 		atl1c_write_phy_reg(hw, MII_DBG_DATA, 0x929D);
 	}
 	if (hw->nic_type == athr_l1c || hw->nic_type == athr_l2c_b2
-		|| hw->nic_type == athr_l2c) {
+		|| hw->nic_type == athr_l2c || hw->nic_type == athr_l2c) {
 		atl1c_write_phy_reg(hw, MII_DBG_ADDR, 0x29);
 		atl1c_write_phy_reg(hw, MII_DBG_DATA, 0xB6DD);
 	}
 	err = atl1c_write_phy_reg(hw, MII_IER, mii_ier_data);
 	if (err) {
-		if (netif_msg_hw(adapter))
-			dev_err(&pdev->dev,
-				"Error enable PHY linkChange Interrupt\n");
+		dev_err(&pdev->dev, "Error enable PHY linkChange Interrupt\n");
 		return err;
 	}
 	if (!(hw->ctrl_flags & ATL1C_FPGA_VERSION))
@@ -510,31 +543,30 @@ int atl1c_phy_init(struct atl1c_hw *hw)
 	}
 	switch (hw->media_type) {
 	case MEDIA_TYPE_AUTO_SENSOR:
+	case MEDIA_TYPE_1000M_FULL:
 		ret_val = atl1c_phy_setup_adv(hw);
 		if (ret_val) {
-			if (netif_msg_link(adapter))
-				dev_err(&pdev->dev,
-					"Error Setting up Auto-Negotiation\n");
+			dev_err(&pdev->dev,
+				"Error Setting up Auto-Negotiation\n");
 			return ret_val;
 		}
-		mii_bmcr_data |= BMCR_ANENABLE | BMCR_ANRESTART;
+		mii_bmcr_data |= BMCR_AUTO_NEG_EN | BMCR_RESTART_AUTO_NEG;
 		break;
 	case MEDIA_TYPE_100M_FULL:
-		mii_bmcr_data |= BMCR_SPEED100 | BMCR_FULLDPLX;
+		mii_bmcr_data |= BMCR_SPEED_100 | BMCR_FULL_DUPLEX;
 		break;
 	case MEDIA_TYPE_100M_HALF:
-		mii_bmcr_data |= BMCR_SPEED100;
+		mii_bmcr_data |= BMCR_SPEED_100;
 		break;
 	case MEDIA_TYPE_10M_FULL:
-		mii_bmcr_data |= BMCR_FULLDPLX;
+		mii_bmcr_data |= BMCR_SPEED_10 | BMCR_FULL_DUPLEX;
 		break;
 	case MEDIA_TYPE_10M_HALF:
+		mii_bmcr_data |= BMCR_SPEED_10;
 		break;
 	default:
-		if (netif_msg_link(adapter))
-			dev_err(&pdev->dev, "Wrong Media type %d\n",
-				hw->media_type);
-		return -1;
+		dev_err(&pdev->dev, "Wrong Media type %d\n", hw->media_type);
+		return AT_ERR_PARAM;
 		break;
 	}
 
@@ -564,7 +596,7 @@ int atl1c_get_speed_and_duplex(struct atl1c_hw *hw, u16 *speed, u16 *duplex)
 		return err;
 
 	if (!(phy_data & GIGA_PSSR_SPD_DPLX_RESOLVED))
-		return -1;
+		return AT_ERR_PHY_RES;
 
 	switch (phy_data & GIGA_PSSR_SPEED) {
 	case GIGA_PSSR_1000MBS:
@@ -577,7 +609,7 @@ int atl1c_get_speed_and_duplex(struct atl1c_hw *hw, u16 *speed, u16 *duplex)
 		*speed = SPEED_10;
 		break;
 	default:
-		return -1;
+		return AT_ERR_PHY_SPEED;
 		break;
 	}
 
@@ -589,31 +621,32 @@ int atl1c_get_speed_and_duplex(struct atl1c_hw *hw, u16 *speed, u16 *duplex)
 	return 0;
 }
 
-int atl1c_phy_power_saving(struct atl1c_hw *hw)
+int atl1c_phy_power_saving(struct atl1c_hw * hw)
 {
 	struct atl1c_adapter *adapter = (struct atl1c_adapter *)hw->adapter;
 	struct pci_dev *pdev = adapter->pdev;
 	int ret = 0;
-	u16 autoneg_advertised = ADVERTISED_10baseT_Half;
+	u16 autoneg_advertised = ADVERTISE_10_HALF; 
 	u16 save_autoneg_advertised;
 	u16 phy_data;
 	u16 mii_lpa_data;
 	u16 speed = SPEED_0;
 	u16 duplex = FULL_DUPLEX;
 	int i;
-
+	
+	//read twice to get status
 	atl1c_read_phy_reg(hw, MII_BMSR, &phy_data);
 	atl1c_read_phy_reg(hw, MII_BMSR, &phy_data);
 	if (phy_data & BMSR_LSTATUS) {
 		atl1c_read_phy_reg(hw, MII_LPA, &mii_lpa_data);
 		if (mii_lpa_data & LPA_10FULL)
-			autoneg_advertised = ADVERTISED_10baseT_Full;
+			autoneg_advertised = ADVERTISE_10_FULL;
 		else if (mii_lpa_data & LPA_10HALF)
-			autoneg_advertised = ADVERTISED_10baseT_Half;
+			autoneg_advertised = ADVERTISE_10_HALF;
 		else if (mii_lpa_data & LPA_100HALF)
-			autoneg_advertised = ADVERTISED_100baseT_Half;
+			autoneg_advertised = ADVERTISE_100_HALF;
 		else if (mii_lpa_data & LPA_100FULL)
-			autoneg_advertised = ADVERTISED_100baseT_Full;
+			autoneg_advertised = ADVERTISE_100_FULL;
 
 		save_autoneg_advertised = hw->autoneg_advertised;
 		hw->phy_configured = false;
@@ -623,7 +656,7 @@ int atl1c_phy_power_saving(struct atl1c_hw *hw)
 			ret = -1;
 		}
 		hw->autoneg_advertised = save_autoneg_advertised;
-
+		
 		if (mii_lpa_data) {
 			for (i = 0; i < AT_SUSPEND_LINK_TIMEOUT; i++) {
 				mdelay(100);
@@ -640,11 +673,10 @@ int atl1c_phy_power_saving(struct atl1c_hw *hw)
 		}
 	} else {
 		speed = SPEED_10;
-		duplex = HALF_DUPLEX;
+		duplex = HALF_DUPLEX; 
 	}
 	adapter->link_speed = speed;
 	adapter->link_duplex = duplex;
-
 	return ret;
 }
 
@@ -656,7 +688,7 @@ int atl1c_restart_autoneg(struct atl1c_hw *hw)
 	err = atl1c_phy_setup_adv(hw);
 	if (err)
 		return err;
-	mii_bmcr_data |= BMCR_ANENABLE | BMCR_ANRESTART;
+	mii_bmcr_data |= BMCR_AUTO_NEG_EN | BMCR_RESTART_AUTO_NEG;
 
 	return atl1c_write_phy_reg(hw, MII_BMCR, mii_bmcr_data);
 }

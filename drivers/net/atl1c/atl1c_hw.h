@@ -1,5 +1,5 @@
 /*
- * Copyright(c) 2008 - 2009 Atheros Corporation. All rights reserved.
+ * Copyright(c) 2007 Atheros Corporation. All rights reserved.
  *
  * Derived from Intel e1000 driver
  * Copyright(c) 1999 - 2005 Intel Corporation. All rights reserved.
@@ -22,8 +22,7 @@
 #ifndef _ATL1C_HW_H_
 #define _ATL1C_HW_H_
 
-#include <linux/types.h>
-#include <linux/mii.h>
+#include "at_osdep.h"
 
 struct atl1c_adapter;
 struct atl1c_hw;
@@ -33,17 +32,28 @@ void atl1c_phy_disable(struct atl1c_hw *hw);
 void atl1c_hw_set_mac_addr(struct atl1c_hw *hw);
 int atl1c_phy_reset(struct atl1c_hw *hw);
 int atl1c_read_mac_addr(struct atl1c_hw *hw);
+//int atl1c_phy_commit(struct atl1c_hw *hw);
 int atl1c_get_speed_and_duplex(struct atl1c_hw *hw, u16 *speed, u16 *duplex);
+u32 atl1c_auto_get_fc(struct atl1c_adapter *adapter, u16 duplex);
 u32 atl1c_hash_mc_addr(struct atl1c_hw *hw, u8 *mc_addr);
 void atl1c_hash_set(struct atl1c_hw *hw, u32 hash_value);
 int atl1c_read_phy_reg(struct atl1c_hw *hw, u16 reg_addr, u16 *phy_data);
 int atl1c_write_phy_reg(struct atl1c_hw *hw, u32 reg_addr, u16 phy_data);
+int atl1c_validate_mdi_setting(struct atl1c_hw *hw);
+void atl1c_hw_set_mac_addr(struct atl1c_hw *hw);
 bool atl1c_read_eeprom(struct atl1c_hw *hw, u32 offset, u32 *p_value);
+bool atl1c_write_eeprom(struct atl1c_hw *hw, u32 offset, u32 value);
 int atl1c_phy_init(struct atl1c_hw *hw);
 int atl1c_check_eeprom_exist(struct atl1c_hw *hw);
+void atl1c_force_ps(struct atl1c_hw *hw);
 int atl1c_restart_autoneg(struct atl1c_hw *hw);
-int atl1c_phy_power_saving(struct atl1c_hw *hw);
+int atl1c_phy_power_saving(struct atl1c_hw * hw);
 /* register definition */
+#define REG_PM_CTRLSTAT             	0x44
+#define PM_CTRLSTAT_PME_EN		0x100
+
+#define REG_PCIE_CAP_LIST           	0x58
+
 #define REG_DEVICE_CAP              	0x5C
 #define DEVICE_CAP_MAX_PAYLOAD_MASK     0x7
 #define DEVICE_CAP_MAX_PAYLOAD_SHIFT    0
@@ -128,6 +138,9 @@ int atl1c_phy_power_saving(struct atl1c_hw *hw);
 
 #define REG_TWSI_DEBUG			0x1108
 #define TWSI_DEBUG_DEV_EXIST		0x20000000
+
+#define REG_DMA_DEBUG			0x1114
+#define DMA_DEBUG_VENDOR_MSG		0x1
 
 #define REG_EEPROM_CTRL			0x12C0
 #define EEPROM_CTRL_DATA_HI_MASK	0xFFFF
@@ -241,26 +254,26 @@ int atl1c_phy_power_saving(struct atl1c_hw *hw);
 #define IDLE_STATUS_MASK		0x00FF
 #define IDLE_STATUS_RXMAC_NO_IDLE      	0x1
 #define IDLE_STATUS_TXMAC_NO_IDLE      	0x2
-#define IDLE_STATUS_RXQ_NO_IDLE        	0x4
+#define IDLE_STATUS_RXQ_NO_IDLE        	0x4     
 #define IDLE_STATUS_TXQ_NO_IDLE        	0x8
-#define IDLE_STATUS_DMAR_NO_IDLE       	0x10
-#define IDLE_STATUS_DMAW_NO_IDLE       	0x20
-#define IDLE_STATUS_SMB_NO_IDLE        	0x40
-#define IDLE_STATUS_CMB_NO_IDLE        	0x80
+#define IDLE_STATUS_DMAR_NO_IDLE       	0x10 	
+#define IDLE_STATUS_DMAW_NO_IDLE       	0x20 	
+#define IDLE_STATUS_SMB_NO_IDLE        	0x40 	
+#define IDLE_STATUS_CMB_NO_IDLE        	0x80 	
 
 /* MDIO Control Register */
 #define REG_MDIO_CTRL           	0x1414
 #define MDIO_DATA_MASK          	0xffff  /* On MDIO write, the 16-bit
-						 * control data to write to PHY
+						 * control data to write to PHY 
 						 * MII management register */
 #define MDIO_DATA_SHIFT         	0       /* On MDIO read, the 16-bit
-						 * status data that was read
+						 * status data that was read 
 						 * from the PHY MII management register */
 #define MDIO_REG_ADDR_MASK      	0x1f    /* MDIO register address */
 #define MDIO_REG_ADDR_SHIFT     	16
 #define MDIO_RW                 	0x200000  /* 1: read, 0: write */
 #define MDIO_SUP_PREAMBLE       	0x400000  /* Suppress preamble */
-#define MDIO_START              	0x800000  /* Write 1 to initiate the MDIO
+#define MDIO_START              	0x800000  /* Write 1 to initiate the MDIO 
 						   * master. And this bit is self
 						   * cleared after one cycle */
 #define MDIO_CLK_SEL_SHIFT      	24
@@ -284,17 +297,17 @@ int atl1c_phy_power_saving(struct atl1c_hw *hw);
 #define PHY_STATUS_LPW_STATE		0x80000000
 /* BIST Control and Status Register0 (for the Packet Memory) */
 #define REG_BIST0_CTRL              	0x141c
-#define BIST0_NOW                   	0x1
+#define BIST0_NOW                   	0x1 
 #define BIST0_SRAM_FAIL             	0x2 /* 1: The SRAM failure is
-					     * un-repairable  because
-					     * it has address decoder
-					     * failure or more than 1 cell
+					     * un-repairable  because 
+					     * it has address decoder 
+					     * failure or more than 1 cell 
 					     * stuck-to-x failure */
 #define BIST0_FUSE_FLAG             	0x4
 
 /* BIST Control and Status Register1(for the retry buffer of PCI Express) */
 #define REG_BIST1_CTRL			0x1420
-#define BIST1_NOW                   	0x1
+#define BIST1_NOW                   	0x1 
 #define BIST1_SRAM_FAIL             	0x2
 #define BIST1_FUSE_FLAG             	0x4
 
@@ -314,44 +327,43 @@ int atl1c_phy_power_saving(struct atl1c_hw *hw);
 
 /* MAC Control Register  */
 #define REG_MAC_CTRL         		0x1480
-#define MAC_CTRL_TX_EN			0x1
-#define MAC_CTRL_RX_EN			0x2
-#define MAC_CTRL_TX_FLOW		0x4
-#define MAC_CTRL_RX_FLOW            	0x8
-#define MAC_CTRL_LOOPBACK          	0x10
-#define MAC_CTRL_DUPLX              	0x20
-#define MAC_CTRL_ADD_CRC            	0x40
-#define MAC_CTRL_PAD                	0x80
-#define MAC_CTRL_LENCHK             	0x100
-#define MAC_CTRL_HUGE_EN            	0x200
-#define MAC_CTRL_PRMLEN_SHIFT       	10
+#define MAC_CTRL_TX_EN			0x1 
+#define MAC_CTRL_RX_EN			0x2 
+#define MAC_CTRL_TX_FLOW		0x4  
+#define MAC_CTRL_RX_FLOW            	0x8  
+#define MAC_CTRL_LOOPBACK          	0x10      
+#define MAC_CTRL_DUPLX              	0x20      
+#define MAC_CTRL_ADD_CRC            	0x40      
+#define MAC_CTRL_PAD                	0x80      
+#define MAC_CTRL_LENCHK             	0x100     
+#define MAC_CTRL_HUGE_EN            	0x200     
+#define MAC_CTRL_PRMLEN_SHIFT       	10        
 #define MAC_CTRL_PRMLEN_MASK        	0xf
-#define MAC_CTRL_RMV_VLAN           	0x4000
-#define MAC_CTRL_PROMIS_EN          	0x8000
-#define MAC_CTRL_TX_PAUSE           	0x10000
-#define MAC_CTRL_SCNT               	0x20000
-#define MAC_CTRL_SRST_TX            	0x40000
-#define MAC_CTRL_TX_SIMURST         	0x80000
-#define MAC_CTRL_SPEED_SHIFT        	20
+#define MAC_CTRL_RMV_VLAN           	0x4000    
+#define MAC_CTRL_PROMIS_EN          	0x8000    
+#define MAC_CTRL_TX_PAUSE           	0x10000   
+#define MAC_CTRL_SCNT               	0x20000   
+#define MAC_CTRL_SRST_TX            	0x40000   
+#define MAC_CTRL_TX_SIMURST         	0x80000   
+#define MAC_CTRL_SPEED_SHIFT        	20        
 #define MAC_CTRL_SPEED_MASK         	0x3
-#define MAC_CTRL_DBG_TX_BKPRESURE   	0x400000
-#define MAC_CTRL_TX_HUGE            	0x800000
-#define MAC_CTRL_RX_CHKSUM_EN       	0x1000000
-#define MAC_CTRL_MC_ALL_EN          	0x2000000
-#define MAC_CTRL_BC_EN              	0x4000000
-#define MAC_CTRL_DBG                	0x8000000
+#define MAC_CTRL_DBG_TX_BKPRESURE   	0x400000  
+#define MAC_CTRL_TX_HUGE            	0x800000  
+#define MAC_CTRL_RX_CHKSUM_EN       	0x1000000 
+#define MAC_CTRL_MC_ALL_EN          	0x2000000 
+#define MAC_CTRL_BC_EN              	0x4000000 
+#define MAC_CTRL_DBG                	0x8000000 
 #define MAC_CTRL_SINGLE_PAUSE_EN	0x10000000
 #define MAC_CTRL_HASH_ALG_CRC32		0x20000000
 #define MAC_CTRL_SPEED_MODE_SW		0x40000000
-
 /* MAC IPG/IFG Control Register  */
 #define REG_MAC_IPG_IFG             	0x1484
-#define MAC_IPG_IFG_IPGT_SHIFT      	0 	/* Desired back to back
-						 * inter-packet gap. The
+#define MAC_IPG_IFG_IPGT_SHIFT      	0 	/* Desired back to back 
+						 * inter-packet gap. The 
 						 * default is 96-bit time */
 #define MAC_IPG_IFG_IPGT_MASK       	0x7f
-#define MAC_IPG_IFG_MIFG_SHIFT      	8       /* Minimum number of IFG to
-						 * enforce in between RX frames */
+#define MAC_IPG_IFG_MIFG_SHIFT      	8       /* Minimum number of IFG to 
+					         * enforce in between RX frames */
 #define MAC_IPG_IFG_MIFG_MASK       	0xff  	/* Frame gap below such IFP is dropped */
 #define MAC_IPG_IFG_IPGR1_SHIFT     	16   	/* 64bit Carrier-Sense window */
 #define MAC_IPG_IFG_IPGR1_MASK      	0x7f
@@ -368,12 +380,12 @@ int atl1c_phy_power_saving(struct atl1c_hw *hw);
 #define REG_MAC_HALF_DUPLX_CTRL     	0x1498
 #define MAC_HALF_DUPLX_CTRL_LCOL_SHIFT  0      /* Collision Window */
 #define MAC_HALF_DUPLX_CTRL_LCOL_MASK   0x3ff
-#define MAC_HALF_DUPLX_CTRL_RETRY_SHIFT 12
+#define MAC_HALF_DUPLX_CTRL_RETRY_SHIFT 12 
 #define MAC_HALF_DUPLX_CTRL_RETRY_MASK  0xf
-#define MAC_HALF_DUPLX_CTRL_EXC_DEF_EN  0x10000
-#define MAC_HALF_DUPLX_CTRL_NO_BACK_C   0x20000
+#define MAC_HALF_DUPLX_CTRL_EXC_DEF_EN  0x10000 
+#define MAC_HALF_DUPLX_CTRL_NO_BACK_C   0x20000 
 #define MAC_HALF_DUPLX_CTRL_NO_BACK_P   0x40000 /* No back-off on backpressure,
-						 * immediately start the
+						 * immediately start the 
 						 * transmission after back pressure */
 #define MAC_HALF_DUPLX_CTRL_ABEBE        0x80000 /* 1: Alternative Binary Exponential Back-off Enabled */
 #define MAC_HALF_DUPLX_CTRL_ABEBT_SHIFT  20      /* Maximum binary exponential number */
@@ -446,9 +458,9 @@ int atl1c_phy_power_saving(struct atl1c_hw *hw);
 #define REG_SRAM_PKTH_ADDR          	0x1532
 
 /*
- * Load Ptr Register
+ * Load Ptr Register 
  * Software sets this bit after the initialization of the head and tail */
-#define REG_LOAD_PTR                	0x1534
+#define REG_LOAD_PTR                	0x1534 
 
 /*
  * addresses of all descriptors, as well as the following descriptor
@@ -512,7 +524,7 @@ int atl1c_phy_power_saving(struct atl1c_hw *hw);
 #define TXQ_CTRL_EN                     0x20
 #define TXQ_CTRL_ENH_MODE               0x40
 #define TXQ_CTRL_LS_8023_EN		0x80
-#define TXQ_TXF_BURST_NUM_SHIFT    	16
+#define TXQ_TXF_BURST_NUM_SHIFT    	16 
 #define TXQ_TXF_BURST_NUM_MASK     	0xFFFF
 
 /* Jumbo packet Threshold for task offload */
@@ -592,7 +604,7 @@ int atl1c_phy_power_saving(struct atl1c_hw *hw);
 #define DMA_CTRL_DMAW_DLY_CNT_MASK      0x000F
 #define DMA_CTRL_DMAW_DLY_CNT_SHIFT     16
 #define DMA_CTRL_CMB_EN               	0x100000
-#define DMA_CTRL_SMB_EN			0x200000
+#define DMA_CTRL_SMB_EN			0x200000	
 #define DMA_CTRL_CMB_NOW		0x400000
 #define MAC_CTRL_SMB_DIS		0x1000000
 #define DMA_CTRL_SMB_NOW		0x80000000
@@ -686,7 +698,7 @@ int atl1c_phy_power_saving(struct atl1c_hw *hw);
 	ISR_RX_PKT_0    |\
 	ISR_RX_PKT_1    |\
 	ISR_RX_PKT_2    |\
-	ISR_RX_PKT_3)
+	ISR_RX_PKT_3    )
 
 #define ISR_OVER	(\
 	ISR_RFD0_UR 	|\
@@ -694,8 +706,8 @@ int atl1c_phy_power_saving(struct atl1c_hw *hw);
 	ISR_RFD2_UR	|\
 	ISR_RFD3_UR	|\
 	ISR_HW_RXF_OV	|\
-	ISR_TXF_UR)
-
+	ISR_TXF_UR)	
+	
 #define ISR_ERROR	(\
 	ISR_DMAR_TO_RST	|\
 	ISR_TXQ_TO_RST  |\
@@ -730,31 +742,101 @@ int atl1c_phy_power_saving(struct atl1c_hw *hw);
 				 CLK_GATING_TXQ_EN  |\
 				 CLK_GATING_RXQ_EN  |\
 				 CLK_GATING_TXMAC_EN|\
-				 CLK_GATING_RXMAC_EN)
+				 CLK_GATING_RXMAC_EN) 
 
 /* DEBUG ADDR */
 #define REG_DEBUG_DATA0 		0x1900
 #define REG_DEBUG_DATA1 		0x1904
 
-#define L1D_MPW_PHYID1			0xD01C  /* V7 */
-#define L1D_MPW_PHYID2			0xD01D  /* V1-V6 */
-#define L1D_MPW_PHYID3			0xD01E  /* V8 */
+/* PHY Control Register */
+#define MII_BMCR			0x00
+#define BMCR_SPEED_SELECT_MSB		0x0040  /* bits 6,13: 10=1000, 01=100, 00=10 */
+#define BMCR_COLL_TEST_ENABLE		0x0080  /* Collision test enable */
+#define BMCR_FULL_DUPLEX		0x0100  /* FDX =1, half duplex =0 */
+#define BMCR_RESTART_AUTO_NEG		0x0200  /* Restart auto negotiation */
+#define BMCR_ISOLATE			0x0400  /* Isolate PHY from MII */
+#define BMCR_POWER_DOWN			0x0800  /* Power down */
+#define BMCR_AUTO_NEG_EN		0x1000  /* Auto Neg Enable */
+#define BMCR_SPEED_SELECT_LSB		0x2000  /* bits 6,13: 10=1000, 01=100, 00=10 */
+#define BMCR_LOOPBACK			0x4000  /* 0 = normal, 1 = loopback */
+#define BMCR_RESET			0x8000  /* 0 = normal, 1 = PHY reset */
+#define BMCR_SPEED_MASK			0x2040
+#define BMCR_SPEED_1000			0x0040
+#define BMCR_SPEED_100			0x2000
+#define BMCR_SPEED_10			0x0000
+
+/* PHY Status Register */
+#define MII_BMSR			0x01
+#define BMMSR_EXTENDED_CAPS		0x0001  /* Extended register capabilities */
+#define BMSR_JABBER_DETECT		0x0002  /* Jabber Detected */
+#define BMSR_LINK_STATUS		0x0004  /* Link Status 1 = link */
+#define BMSR_AUTONEG_CAPS		0x0008  /* Auto Neg Capable */
+#define BMSR_REMOTE_FAULT		0x0010  /* Remote Fault Detect */
+#define BMSR_AUTONEG_COMPLETE		0x0020  /* Auto Neg Complete */
+#define BMSR_PREAMBLE_SUPPRESS		0x0040  /* Preamble may be suppressed */
+#define BMSR_EXTENDED_STATUS		0x0100  /* Ext. status info in Reg 0x0F */
+#define BMSR_100T2_HD_CAPS		0x0200  /* 100T2 Half Duplex Capable */
+#define BMSR_100T2_FD_CAPS		0x0400  /* 100T2 Full Duplex Capable */
+#define BMSR_10T_HD_CAPS		0x0800  /* 10T   Half Duplex Capable */
+#define BMSR_10T_FD_CAPS		0x1000  /* 10T   Full Duplex Capable */
+#define BMSR_100X_HD_CAPS		0x2000  /* 100X  Half Duplex Capable */
+#define BMMII_SR_100X_FD_CAPS		0x4000  /* 100X  Full Duplex Capable */
+#define BMMII_SR_100T4_CAPS		0x8000  /* 100T4 Capable */
+
+#define MII_PHYSID1			0x02
+#define MII_PHYSID2			0x03
+#define L1D_MPW_PHYID1 			0xD01C  /* V7 */
+#define L1D_MPW_PHYID2 			0xD01D  /* V1-V6 */
+#define L1D_MPW_PHYID3 			0xD01E  /* V8 */
 
 
 /* Autoneg Advertisement Register */
-#define ADVERTISE_DEFAULT_CAP \
-	(ADVERTISE_ALL | ADVERTISE_PAUSE_CAP | ADVERTISE_PAUSE_ASYM)
+#define MII_ADVERTISE			0x04
+#define ADVERTISE_SELECTOR_FIELD	0x0001  /* indicates IEEE 802.3 CSMA/CD */
+#define ADVERTISE_10T_HD_CAPS		0x0020  /* 10T   Half Duplex Capable */
+#define ADVERTISE_10T_FD_CAPS		0x0040  /* 10T   Full Duplex Capable */
+#define ADVERTISE_100TX_HD_CAPS		0x0080  /* 100TX Half Duplex Capable */
+#define ADVERTISE_100TX_FD_CAPS		0x0100  /* 100TX Full Duplex Capable */
+#define ADVERTISE_100T4_CAPS		0x0200  /* 100T4 Capable */
+#define ADVERTISE_PAUSE			0x0400  /* Pause operation desired */
+#define ADVERTISE_ASM_DIR		0x0800  /* Asymmetric Pause Direction bit */
+#define ADVERTISE_REMOTE_FAULT		0x2000  /* Remote Fault detected */
+#define ADVERTISE_NEXT_PAGE		0x8000  /* Next Page ability supported */
+#define ADVERTISE_SPEED_MASK		0x01E0
+#define ADVERTISE_DEFAULT_CAP		0x0DE0
+
+#if 0
+/* Link partner ability register */
+#define MII_LPA				0x05
+#define LPA_SLCT			0x001   /* Same as advertise selector  */
+#define LPA_10HALF			0x002   /* Can do 10mbps half-duplex   */
+#define LPA_10FULL			0x0040  /* Can do 10mbps full-duplex   */
+#define LPA_100HALF			0x0080  /* Can do 100mbps half-duplex  */
+#define LPA_100FULL			0x0100  /* Can do 100mbps full-duplex  */
+#define LPA_100BASE4			0x0200  /* 100BASE-T4  */
+#define LPA_PAUSE			0x0400  /* PAUSE */
+#define LPA_ASYPAUSE			0x0800  /* Asymmetrical PAUSE */
+#define LPA_RFAULT			0x2000  /* Link partner faulted        */
+#define LPA_LPACK			0x4000  /* Link partner acked us       */
+#define LPA_NPAGE			0x8000  /* Next page bit               */
+#endif
 
 /* 1000BASE-T Control Register */
-#define GIGA_CR_1000T_REPEATER_DTE	0x0400  /* 1=Repeater/switch device port 0=DTE device */
+#define MII_GIGA_CR			0x09
+#define GIGA_CR_1000T_HD_CAPS		0x0100  /* Advertise 1000T HD capability */
+#define GIGA_CR_1000T_FD_CAPS		0x0200  /* Advertise 1000T FD capability  */
+#define GIGA_CR_1000T_REPEATER_DTE	0x0400  /* 1=Repeater/switch device port
+		  				   0=DTE device */
 
-#define GIGA_CR_1000T_MS_VALUE		0x0800  /* 1=Configure PHY as Master 0=Configure PHY as Slave */
-#define GIGA_CR_1000T_MS_ENABLE		0x1000  /* 1=Master/Slave manual config value 0=Automatic Master/Slave config */
+#define GIGA_CR_1000T_MS_VALUE		0x0800  /* 1=Configure PHY as Master 
+		    				   0=Configure PHY as Slave */
+#define GIGA_CR_1000T_MS_ENABLE		0x1000  /* 1=Master/Slave manual config value 
+		    				   0=Automatic Master/Slave config */
 #define GIGA_CR_1000T_TEST_MODE_NORMAL	0x0000  /* Normal Operation */
 #define GIGA_CR_1000T_TEST_MODE_1	0x2000  /* Transmit Waveform test */
 #define GIGA_CR_1000T_TEST_MODE_2	0x4000  /* Master Transmit Jitter test */
 #define GIGA_CR_1000T_TEST_MODE_3	0x6000  /* Slave Transmit Jitter test */
-#define GIGA_CR_1000T_TEST_MODE_4	0x8000	/* Transmitter Distortion test */
+#define GIGA_CR_1000T_TEST_MODE_4	0x8000  /* Transmitter Distortion test */
 #define GIGA_CR_1000T_SPEED_MASK	0x0300
 #define GIGA_CR_1000T_DEFAULT_CAP	0x0300
 
@@ -795,74 +877,5 @@ int atl1c_phy_power_saving(struct atl1c_hw *hw);
 
 #define MII_DBG_ADDR			0x1D
 #define MII_DBG_DATA			0x1E
-
-#define MII_ANA_CTRL_0			0x0
-#define ANA_RESTART_CAL			0x0001
-#define ANA_MANUL_SWICH_ON_SHIFT	0x1
-#define ANA_MANUL_SWICH_ON_MASK		0xF
-#define ANA_MAN_ENABLE			0x0020
-#define ANA_SEL_HSP			0x0040
-#define ANA_EN_HB			0x0080
-#define ANA_EN_HBIAS			0x0100
-#define ANA_OEN_125M			0x0200
-#define ANA_EN_LCKDT			0x0400
-#define ANA_LCKDT_PHY			0x0800
-#define ANA_AFE_MODE			0x1000
-#define ANA_VCO_SLOW			0x2000
-#define ANA_VCO_FAST			0x4000
-#define ANA_SEL_CLK125M_DSP		0x8000
-
-#define MII_ANA_CTRL_4			0x4
-#define ANA_IECHO_ADJ_MASK		0xF
-#define ANA_IECHO_ADJ_3_SHIFT		0
-#define ANA_IECHO_ADJ_2_SHIFT		4
-#define ANA_IECHO_ADJ_1_SHIFT		8
-#define ANA_IECHO_ADJ_0_SHIFT		12
-
-#define MII_ANA_CTRL_5			0x5
-#define ANA_SERDES_CDR_BW_SHIFT		0
-#define ANA_SERDES_CDR_BW_MASK		0x3
-#define ANA_MS_PAD_DBG			0x0004
-#define ANA_SPEEDUP_DBG			0x0008
-#define ANA_SERDES_TH_LOS_SHIFT		4
-#define ANA_SERDES_TH_LOS_MASK		0x3
-#define ANA_SERDES_EN_DEEM		0x0040
-#define ANA_SERDES_TXELECIDLE		0x0080
-#define ANA_SERDES_BEACON		0x0100
-#define ANA_SERDES_HALFTXDR		0x0200
-#define ANA_SERDES_SEL_HSP		0x0400
-#define ANA_SERDES_EN_PLL		0x0800
-#define ANA_SERDES_EN			0x1000
-#define ANA_SERDES_EN_LCKDT		0x2000
-
-#define MII_ANA_CTRL_11			0xB
-#define ANA_PS_HIB_EN			0x8000
-
-#define MII_ANA_CTRL_18			0x12
-#define ANA_TEST_MODE_10BT_01SHIFT	0
-#define ANA_TEST_MODE_10BT_01MASK	0x3
-#define ANA_LOOP_SEL_10BT		0x0004
-#define ANA_RGMII_MODE_SW		0x0008
-#define ANA_EN_LONGECABLE		0x0010
-#define ANA_TEST_MODE_10BT_2		0x0020
-#define ANA_EN_10BT_IDLE		0x0400
-#define ANA_EN_MASK_TB			0x0800
-#define ANA_TRIGGER_SEL_TIMER_SHIFT	12
-#define ANA_TRIGGER_SEL_TIMER_MASK	0x3
-#define ANA_INTERVAL_SEL_TIMER_SHIFT	14
-#define ANA_INTERVAL_SEL_TIMER_MASK	0x3
-
-#define MII_ANA_CTRL_41			0x29
-#define ANA_TOP_PS_EN			0x8000
-
-#define MII_ANA_CTRL_54			0x36
-#define ANA_LONG_CABLE_TH_100_SHIFT	0
-#define ANA_LONG_CABLE_TH_100_MASK	0x3F
-#define ANA_DESERVED			0x0040
-#define ANA_EN_LIT_CH			0x0080
-#define ANA_SHORT_CABLE_TH_100_SHIFT	8
-#define ANA_SHORT_CABLE_TH_100_MASK	0x3F
-#define ANA_BP_BAD_LINK_ACCUM		0x4000
-#define ANA_BP_SMALL_BW			0x8000
 
 #endif /*_ATL1C_HW_H_*/
