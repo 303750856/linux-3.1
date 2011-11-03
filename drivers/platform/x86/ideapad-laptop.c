@@ -58,6 +58,7 @@
 #define EVENT_3G		3
 #define EVENT_BLUETOOTH		4
 #define EVENT_RESOL_CHANGE	5
+#define EVENT_BRIGHTNESS	6
 
 static struct {
 	char *on_cmd;
@@ -734,6 +735,10 @@ static int read_status( acpi_handle handle  , int dev_type )
 			sprintf(key_str, "resol change" );
                         strncpy(NLMSG_DATA(nlh) , key_str , 13 );
 
+		case EVENT_BRIGHTNESS:
+			sprintf(key_str, "brightness" );
+                        strncpy(NLMSG_DATA(nlh) , key_str , 11 );
+
 
 		default:
 			break;
@@ -876,6 +881,7 @@ static void ideapad_acpi_notify(struct acpi_device *adevice, u32 event)
 					break;
 				case 4:
 					ideapad_backlight_notify_brightness(priv);
+					read_status( ideapad_handle , EVENT_BRIGHTNESS );
 					printk("\nBrightness: Fn+up or down  press!");	
 					break;	
 				case 5:
@@ -951,6 +957,9 @@ static int __init ideapad_acpi_module_init(void)
 static void __exit ideapad_acpi_module_exit(void)
 {
 	acpi_bus_unregister_driver(&ideapad_acpi_driver);
+	/******** mike 2011-10-21 *********/	
+	sock_release(lenovo_sock->sk_socket);
+	/************ end ***************/
 }
 
 MODULE_AUTHOR("David Woodhouse <dwmw2@infradead.org>");
