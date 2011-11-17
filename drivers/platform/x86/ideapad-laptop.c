@@ -57,8 +57,11 @@
 #define EVENT_WIRELESS		2
 #define EVENT_3G		3
 #define EVENT_BLUETOOTH		4
-#define EVENT_RESOL_CHANGE	5
-#define EVENT_BRIGHTNESS	6
+#define EVENT_KILLSW		5
+
+#define EVENT_RESOL_CHANGE	10
+#define EVENT_BRIGHTNESS	11
+
 
 static struct {
 	char *on_cmd;
@@ -74,6 +77,7 @@ static struct {
 	{ "wireless on"	,	"wireless off"	,	11	,	12,	0x14	,	18 }, 
 	{ "3G on"	,	"3G off"	,	5	,	6,	0x1F	,	17 },
 	{ "Bluetooth on",	"Bluetooth off",	12	,	13,	0x16	,	16 },	
+	{ "killsw on"	,	"killsw off"	,	9	,	10,	0x23	,	0 },	
 };
 
 static unsigned int device_exist = 0;
@@ -298,9 +302,6 @@ static size_t enable_write( struct device *dev , struct device_attribute *attr ,
 
 	sscanf( buf , "%d\n" , &device_enable );
 
-	//printk("value input = %d\n" , device_enable);
-	//printk("wmi handle = %d\n", ideapad_handle->handle );
-
 	for ( i = EVENT_WIRELESS ; i <= EVENT_BLUETOOTH ; i++ )
 	{
 		if ( test_bit( i-2 , (unsigned long *)&device_enable) )
@@ -336,12 +337,28 @@ static size_t enable_write( struct device *dev , struct device_attribute *attr ,
 
 static DEVICE_ATTR(enable, 0666, enable_read , enable_write);
 
+static int debug_msg_enable = 0;
+
+//for show debug message
+static size_t debug_read( struct device *dev , struct device_attribute *attr , char *buf , size_t count )
+{
+	return sprintf(buf, "%d\n", debug_msg_enable);
+}
+
+static size_t debug_write( struct device *dev , struct device_attribute *attr , char *buf , size_t count )
+{
+        sscanf(buf, "%d", &debug_msg_enable);
+        return count;
+}
+
+static DEVICE_ATTR(debug_msg, 0666, debug_read , debug_write);
 
 static struct attribute *ideapad_attributes[] = {
 	&dev_attr_camera_power.attr,
 	&dev_attr_cfg.attr,
 	&dev_attr_device.attr,  //mike add
 	&dev_attr_enable.attr,  //mike add
+	&dev_attr_debug_msg.attr,	//mike add
 	NULL
 };
 
@@ -629,8 +646,6 @@ static void ideapad_backlight_notify_power(struct ideapad_private *priv)
 	unsigned long power;
 	struct backlight_device *blightdev = priv->blightdev;
 
-	if (!blightdev)
-		return;
 	if (read_ec_data(ideapad_handle, 0x18, &power))
 		return;
 	blightdev->props.power = power ? FB_BLANK_UNBLANK : FB_BLANK_POWERDOWN;
@@ -658,10 +673,21 @@ static int read_status( acpi_handle handle  , int dev_type )
         struct nlmsghdr *nlh;
 	char key_str[16];
 
-	if (read_ec_data(handle, socket_cmd[dev_type].r_cmd , &vdat))
-        	return -1;        
+	//read device status from EC first
+	if( dev_type < 10 )
+	{
+		//read device status from EC first
+		if (read_ec_data(handle, socket_cmd[dev_type].r_cmd , &vdat))
+		{
+			printk("\n@@@ read ec fail, device is %d", dev_type);
+        		return -1;
+		}
+	}
+
+	if(debug_msg_enable)
+		printk("\n@@@ read: %d status is %d", dev_type ,vdat);
 	
-	printk("\nBefore: %d status is %d", dev_type ,vdat);
+	//prepare to send socket
 	skb = alloc_skb(NLMSG_SPACE(1024), GFP_ATOMIC);
         if(!skb)
 	{
@@ -671,82 +697,52 @@ static int read_status( acpi_handle handle  , int dev_type )
 	nlh = NLMSG_PUT(skb , 0 , 0 , NLMSG_DONE , NLMSG_SPACE(1024));
 
 
-	if( vdat == 0)
-	{
-		sprintf(key_str, "%s", socket_cmd[dev_type].on_cmd );
-		strncpy(NLMSG_DATA(nlh) , key_str , socket_cmd[dev_type].on_cmd_len + 1 );
-	}
-	else
-	{
-		sprintf(key_str, "%s", socket_cmd[dev_type].off_cmd );
-                strncpy(NLMSG_DATA(nlh) , key_str , socket_cmd[dev_type].off_cmd_len + 1 );
-	}	
-
-
 	switch(dev_type)
 	{
-		case EVENT_WIRELESS:
+		case EVENT_WIRELESS:	//wireless on/off	, 12/13
+		case EVENT_TOUCHPAD:	//touchpad on/off 	, 12/13
+
 			if( vdat == 0 )
 			{
-	                	//if (write_ec_cmd( handle , socket_cmd[EVENT_WIRELESS].r_cmd+1 , 1))
-                        	//	return -1;
-
-				//if (write_ec_cmd( handle , socket_cmd[EVENT_BLUETOOTH].r_cmd+1 , 1))
-                                //	return -1;
-				sprintf(key_str, "wireless on" );
-				strncpy(NLMSG_DATA(nlh) , key_str , 12);
+				sprintf(key_str, "%s", socket_cmd[dev_type].on_cmd ); 
+	                        strncpy(NLMSG_DATA(nlh) , key_str , socket_cmd[dev_type].on_cmd_len + 1 ); 
 			}
 			else
 			{
-                                //if (write_ec_cmd( handle , socket_cmd[EVENT_WIRELESS].r_cmd+1 , 0))
-                                //        return -1;
-                                //if (write_ec_cmd( handle , socket_cmd[EVENT_BLUETOOTH].r_cmd+1 , 0))
-                                //        return -1;
- 				sprintf(key_str, "wireless off" );
-				strncpy(NLMSG_DATA(nlh) , key_str , 13);
+ 				sprintf(key_str, "%s", socket_cmd[dev_type].off_cmd ); 
+	                        strncpy(NLMSG_DATA(nlh) , key_str , socket_cmd[dev_type].off_cmd_len + 1 );
 			}
 			break;
 
-		case EVENT_CAMARA:
+		//inverse
+		case EVENT_CAMARA:	//camara on/off		, 10/11
+		case EVENT_KILLSW:      //killsw on/off         , 10/11
+
 			if( vdat == 0 )
-			{
-				sprintf(key_str, "camara off" );
-				strncpy(NLMSG_DATA(nlh) , key_str , 11 );
-			}
-			else
-			{
-				sprintf(key_str, "camara on" );
-				strncpy(NLMSG_DATA(nlh) , key_str , 10);
-			}
-			break;
-
-		case EVENT_TOUCHPAD:   //inverse
-			if ( vdat == 0 )
-			{
-				sprintf(key_str, "touchpad on" );
-				strncpy(NLMSG_DATA(nlh) , key_str , 12 );
-			}
-			else
-			{
-				sprintf(key_str, "touchpad off" );
-				strncpy(NLMSG_DATA(nlh) , key_str , 13 );
-			}
-			break;
+                        {
+                                sprintf(key_str, "%s", socket_cmd[dev_type].off_cmd );
+                                strncpy(NLMSG_DATA(nlh) , key_str , socket_cmd[dev_type].off_cmd_len + 1 );
+                        }
+                        else
+                        {
+                                sprintf(key_str, "%s", socket_cmd[dev_type].on_cmd );
+                                strncpy(NLMSG_DATA(nlh) , key_str , socket_cmd[dev_type].on_cmd_len + 1 );
+                        }
+                        break;
 
 		case EVENT_RESOL_CHANGE:
 			sprintf(key_str, "resol change" );
                         strncpy(NLMSG_DATA(nlh) , key_str , 13 );
+			break;
 
 		case EVENT_BRIGHTNESS:
 			sprintf(key_str, "brightness" );
                         strncpy(NLMSG_DATA(nlh) , key_str , 11 );
-
+			break;
 
 		default:
 			break;
 	}
-
-	printk("\nAfter: %d status is %d", dev_type , vdat);
 
 	NETLINK_CB(skb).dst_group = 1;
 
@@ -754,10 +750,7 @@ static int read_status( acpi_handle handle  , int dev_type )
 		printk("\n@@@ lenovo_sock is null!");
 	else
 		netlink_broadcast(lenovo_sock , skb , 0 , 1 , GFP_KERNEL );
-	
-	if (read_ec_data( handle , socket_cmd[dev_type].r_cmd , &vdat ))
-        	return -1;
-
+		
 	return 0;
 
 nlmsg_failure:
@@ -858,11 +851,17 @@ static void ideapad_acpi_notify(struct acpi_device *adevice, u32 event)
 	if (read_ec_data(handle, 0x1A, &vpc2))
 		return;
 
+	if(debug_msg_enable)
+		printk("@@@ acpi event: %d\n", event);
+
 	vpc1 = (vpc2 << 8) | vpc1;
 	for (vpc_bit = 0; vpc_bit < 16; vpc_bit++) {
 		if (test_bit(vpc_bit, &vpc1)) {
 
 /******** mike 20110901 *********/
+			if(debug_msg_enable)
+				printk("@@@ vpc bit %d\n", vpc_bit);
+
 
 			switch( vpc_bit )
 			{
@@ -900,6 +899,7 @@ static void ideapad_acpi_notify(struct acpi_device *adevice, u32 event)
 					break;		
 				case 9:
 					ideapad_sync_rfk_state(adevice);
+					read_status( ideapad_handle , EVENT_KILLSW );
 					printk("\nKill sw!");
 					break;
 				
@@ -936,6 +936,8 @@ static struct acpi_driver ideapad_acpi_driver = {
 	.ops.notify = ideapad_acpi_notify,
 	.owner = THIS_MODULE,
 };
+
+
 
 static int __init ideapad_acpi_module_init(void)
 {
