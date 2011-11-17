@@ -40,6 +40,35 @@
 static struct sock *acer_sock_key;
 static unsigned long timeout = HZ / 10;
 
+/**** mike add ****/
+struct linpus_atkbd
+{
+	int keycode;
+	int mask;
+}
+linpus_keycode [16];
+/*
+{
+	{113	, 1},
+	{114 	, 1},
+	{115 	, 1},
+	{163 	, 1},
+	{164	, 1},
+	{165	, 1},
+	{166	, 1},
+	{58	, 1},
+	{69	, 1},
+	{70	, 1},
+	{227	, 0},
+	{225	, 0},
+	{224	, 0},
+	{0	, 0},
+	{0	, 0},
+	{0	, 0},
+};
+*/
+
+
 /***************end**********************/
 #define DRIVER_DESC	"AT and PS/2 keyboard driver"
 
@@ -317,6 +346,8 @@ static const unsigned int xl_table[] = {
  *   mars start linpus hotkey --- sysfs
  */
 static int atkbd_netlink_on = 0;
+static int atkbd_debug_code = 0;
+static int keycode_count = 0;
 
 static ssize_t atkbd_on_show(struct device *d,	
 				struct device_attribute *attr, char *b)		
@@ -331,11 +362,54 @@ static ssize_t atkbd_on_store(struct device *d, struct device_attribute *attr,
 	return count;
 }
 
-static struct kobj_attribute atkbd_sysfs =
-		__ATTR(atkbd_netlink_on, 0666, atkbd_on_show, atkbd_on_store);
+static struct kobj_attribute atkbd_sysfs = __ATTR(atkbd_netlink_on, 0666, atkbd_on_show, atkbd_on_store);
+
+static ssize_t debug_on_show(struct device *d,
+                                struct device_attribute *attr, char *b)
+{
+        return sprintf(b, "%d\n", atkbd_debug_code);
+}
+
+static ssize_t debug_on_store(struct device *d, struct device_attribute *attr,
+                                 char *b, size_t count)
+{
+        sscanf(b, "%d", &atkbd_debug_code);
+        return count;
+}
+
+static struct kobj_attribute debug_sysfs = __ATTR(atkbd_debug_code, 0666, debug_on_show, debug_on_store);
+
+static ssize_t new_on_show(struct device *d,
+                                struct device_attribute *attr, char *b)
+{
+        return sprintf(b, "%d\n", keycode_count);
+}
+
+static ssize_t new_on_store(struct device *d, struct device_attribute *attr,
+                                 char *b, size_t count)
+{
+	int mask_and_keycode = 0;
+
+        sscanf(b, "%d", &mask_and_keycode);
+	
+	if(keycode_count < 15 && mask_and_keycode > 1000 && mask_and_keycode < 2560 )
+	{
+		linpus_keycode[keycode_count].keycode = mask_and_keycode / 10;
+		linpus_keycode[keycode_count].mask = mask_and_keycode  % 10;
+		keycode_count++;
+	}
+	printk("@@@ add keycode failure!\n");
+
+        return count;
+}
+
+static struct kobj_attribute new_sysfs = __ATTR(add_keycode, 0666, new_on_show, new_on_store);
+
 static struct attribute * attrs [] =
 {
 	&atkbd_sysfs.attr,
+	&debug_sysfs.attr,
+	&new_sysfs.attr,
 	NULL,
 };
 
@@ -448,6 +522,7 @@ static irqreturn_t atkbd_interrupt(struct serio *serio, unsigned char data,
 	struct nlmsghdr *nlh;
 	int len;
 	char key_str[4];
+	int i;
 /**************end*****************/
 	dev_dbg(&serio->dev, "Received %02x flags %02x\n", data, flags);
 
@@ -525,48 +600,67 @@ static irqreturn_t atkbd_interrupt(struct serio *serio, unsigned char data,
 
 	code = atkbd_compat_scancode(atkbd, code);
 
+	/**** mike add ****/
+	if(atkbd_debug_code)
+                printk("@@@@ scancode = %d \n",code);
+	/**** end ****/
+
 	if (atkbd->emul && --atkbd->emul)
 		goto out;
 
 	keycode = atkbd->keycode[code];
+	
+	/**** mike add ****/
+        if(atkbd_debug_code)
+                printk("@@@@ keycode = %d \n",keycode);
+	/****end****/
 
 	if (keycode != ATKBD_KEY_NULL)
 		input_event(dev, EV_MSC, MSC_SCAN, code);
+
 /*********tomsun 2011-02-21****************/
-	if (!atkbd->release){
-		printk("ssssssssss %d sssssssssss\n",keycode);
-		if (keycode == 114 || keycode == 113 || keycode == 115 || \
-			keycode == 163 || keycode == 164 || keycode == 165 || \
-			keycode == 166 || keycode == 58 || keycode == 69 || \
-			keycode ==70 || keycode == 224 || keycode == 225 || \
-			keycode ==227 )
+	if (!atkbd->release)
+	{
+		for( i = 0 ; i < keycode_count ; i++ )	
 		{
-			//	schedule_timeout(timeout); //marstian
-			#if  1
-			new_jiffies=jiffies;//mars
-			//new_jiffies=get_jiffies_64();//mars
-			if ( new_jiffies - old_jiffies > 200 ){//mars
-				old_jiffies = new_jiffies ;  //mars
-				skb = alloc_skb(NLMSG_SPACE(MAX_CAP), GFP_ATOMIC);
-				if (!skb){
-					printk (KERN_ERR"@@@Tomsun alloc skb failer\n");
-					goto oom;
-				}
-				nlh = NLMSG_PUT(skb, 0, 0, NLMSG_DONE, NLMSG_SPACE(MAX_CAP));
-				sprintf(key_str, "%d", keycode);
-				len = strncpy(NLMSG_DATA(nlh), key_str, 4);
-				NETLINK_CB(skb).dst_group =1;
-				if (acer_sock_key == NULL)
-					printk(KERN_ERR"@@@@@@@@ Tomsun acer_sock_key== NULL\n");
-				else
-					netlink_broadcast(acer_sock_key, skb, 0, 1, GFP_KERNEL);
-			}//mars
-			#endif
-			if ( atkbd_netlink_on){
-				printk(" test for atkbd_netlink_on \n");
-				if (keycode == 114 || keycode == 113 || keycode == 115 || keycode == 163 || keycode == 164 || keycode == 165 || keycode == 166 || keycode == 70){
-					return IRQ_HANDLED;
-				}
+			if( keycode == linpus_keycode[i].keycode )
+			{
+	
+				//schedule_timeout(timeout); //marstian
+				#if  1
+				new_jiffies=jiffies;//mars
+				//new_jiffies=get_jiffies_64();//mars
+				if ( new_jiffies - old_jiffies > 200 )
+				{ //mars
+					old_jiffies = new_jiffies ;  //mars
+					skb = alloc_skb(NLMSG_SPACE(MAX_CAP), GFP_ATOMIC);
+					if (!skb)
+					{
+						printk (KERN_ERR"@@@Tomsun alloc skb failer\n");
+						goto oom;
+					}
+					nlh = NLMSG_PUT(skb, 0, 0, NLMSG_DONE, NLMSG_SPACE(MAX_CAP));
+					sprintf(key_str, "%d", keycode);
+					len = strncpy(NLMSG_DATA(nlh), key_str, 4);
+					NETLINK_CB(skb).dst_group =1;
+
+					if (acer_sock_key == NULL)
+						printk(KERN_ERR"@@@@@@@@ Tomsun acer_sock_key== NULL\n");
+					else
+						netlink_broadcast(acer_sock_key, skb, 0, 1, GFP_KERNEL);
+
+
+				}//mars
+				#endif
+
+				if( linpus_keycode[i].mask == 1 ) //if we want to mask it
+                                                return IRQ_HANDLED;
+	
+				break;
+			}
+			else
+			{
+				continue;
 			}
 		}
 	}

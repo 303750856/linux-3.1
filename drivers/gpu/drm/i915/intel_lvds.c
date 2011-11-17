@@ -40,6 +40,10 @@
 #include "i915_drv.h"
 #include <linux/acpi.h>
 
+/******tomsun***********/
+int backlight_ctl = 1;
+EXPORT_SYMBOL_GPL(backlight_ctl);
+/********end***********/
 /* Private structure for the integrated LVDS support */
 struct intel_lvds {
 	struct intel_encoder base;
@@ -107,7 +111,8 @@ static void intel_lvds_enable(struct intel_lvds *intel_lvds)
 	if (wait_for((I915_READ(stat_reg) & PP_ON) != 0, 1000))
 		DRM_ERROR("timed out waiting for panel to power on\n");
 
-	intel_panel_enable_backlight(dev);
+	if(backlight_ctl)
+		intel_panel_enable_backlight(dev);
 }
 
 static void intel_lvds_disable(struct intel_lvds *intel_lvds)
@@ -126,7 +131,8 @@ static void intel_lvds_disable(struct intel_lvds *intel_lvds)
 		stat_reg = PP_STATUS;
 	}
 
-	intel_panel_disable_backlight(dev);
+	if (backlight_ctl)
+		intel_panel_disable_backlight(dev);
 
 	I915_WRITE(ctl_reg, I915_READ(ctl_reg) & ~POWER_TARGET_ON);
 	if (wait_for((I915_READ(stat_reg) & PP_ON) == 0, 1000))

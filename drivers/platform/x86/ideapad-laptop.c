@@ -751,7 +751,7 @@ static int read_status( acpi_handle handle  , int dev_type )
 	NETLINK_CB(skb).dst_group = 1;
 
 	if (lenovo_sock == NULL)
-		printk(KERN_ERR"\n@@@ lenovo_sock is null!");
+		printk("\n@@@ lenovo_sock is null!");
 	else
 		netlink_broadcast(lenovo_sock , skb , 0 , 1 , GFP_KERNEL );
 	

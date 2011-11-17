@@ -1886,9 +1886,10 @@ set_qf_format:
 			clear_opt(sb, INIT_INODE_TABLE);
 			break;
 		default:
-			ext4_msg(sb, KERN_ERR,
-			       "Unrecognized mount option \"%s\" "
-			       "or missing value", p);
+		//mars	ext4_msg(sb, KERN_ERR,
+		//mars	       "Unrecognized mount option \"%s\" "
+		//mars	       "or missing value", p);
+			; //mars
 			return 0;
 		}
 	}
