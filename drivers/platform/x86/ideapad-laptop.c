@@ -42,6 +42,51 @@
 #define CFG_WIFI_BIT	(18)
 #define CFG_CAMERA_BIT	(19)
 
+/******** mike 20110901 *********/
+/************ end ***************/
+
+#include <net/sock.h>
+#include <linux/netlink.h>
+#include <linux/proc_fs.h>
+#include <linux/skbuff.h>
+#include <linux/connector.h>
+
+
+#define EVENT_CAMARA		0
+#define EVENT_TOUCHPAD		1
+#define EVENT_WIRELESS		2
+#define EVENT_3G		3
+#define EVENT_BLUETOOTH		4
+#define EVENT_KILLSW		5
+
+#define EVENT_RESOL_CHANGE	10
+#define EVENT_BRIGHTNESS	11
+
+
+static struct {
+	char *on_cmd;
+	char *off_cmd;
+	int on_cmd_len;
+	int off_cmd_len;
+	int r_cmd;
+	int cfgbit;
+
+} socket_cmd [] = {
+	{ "camara on"	,	"camara off"	,	9	,	10,	0x1D	,	19 },
+	{ "touchpad on"	,	"touchpad off"	,	11	,	12,	0x1B	,	0 },
+	{ "wireless on"	,	"wireless off"	,	11	,	12,	0x14	,	18 }, 
+	{ "3G on"	,	"3G off"	,	5	,	6,	0x1F	,	17 },
+	{ "Bluetooth on",	"Bluetooth off",	12	,	13,	0x16	,	16 },	
+	{ "killsw on"	,	"killsw off"	,	9	,	10,	0x23	,	0 },	
+};
+
+static unsigned int device_exist = 0;
+static unsigned int device_enable = 1;
+
+static struct sock *lenovo_sock;
+
+/************ end ***************/
+
 struct ideapad_private {
 	struct rfkill *rfk[IDEAPAD_RFKILL_DEV_NUM];
 	struct platform_device *platform_device;
@@ -50,9 +95,11 @@ struct ideapad_private {
 	unsigned long cfg;
 };
 
+static struct acpi_device *acpi_device_global = NULL;
 static acpi_handle ideapad_handle;
 static bool no_bt_rfkill;
-module_param(no_bt_rfkill, bool, 0444);
+
+module_param(no_bt_rfkill, bool, 0664);
 MODULE_PARM_DESC(no_bt_rfkill, "No rfkill for bluetooth.");
 
 /*
@@ -206,11 +253,116 @@ static ssize_t show_ideapad_cfg(struct device *dev,
 
 static DEVICE_ATTR(cfg, 0444, show_ideapad_cfg, NULL);
 
+
+/******** mike 20110901 *********/
+
+static size_t device_read( struct device *dev , struct device_attribute *attr , char *buf )
+{
+	struct ideapad_private *priv = dev_get_drvdata(dev);
+	int cfg = priv->cfg;	
+
+        if (test_bit(socket_cmd[EVENT_WIRELESS].cfgbit, (unsigned long *)&cfg))
+        	device_exist |= 0x01;
+	          
+        if (test_bit(socket_cmd[EVENT_3G].cfgbit, (unsigned long *)&cfg))
+                device_exist |= 0x02;
+
+	if (test_bit(socket_cmd[EVENT_BLUETOOTH].cfgbit, (unsigned long *)&cfg))
+                device_exist |= 0x04;       
+	
+        return sprintf( buf , "%d\n" , device_exist );
+}
+
+static DEVICE_ATTR(device, 0644, device_read, NULL);
+
+static size_t enable_read( struct device *dev , struct device_attribute *attr , char *buf )
+{
+	unsigned long vdat;
+	int i;
+
+        for ( i = EVENT_WIRELESS ; i <= EVENT_BLUETOOTH ; i++ )
+        {
+                if (read_ec_data( ideapad_handle , socket_cmd[i].r_cmd , &vdat))
+                {
+                        printk("read cmd %x failure!\n", (socket_cmd[i].r_cmd) );
+                }
+
+                device_enable = ( device_enable & ~( 1  << (i-2)))  |  ( vdat << (i-2)) ;
+        }
+	
+	return sprintf( buf , "%d\n" , device_enable );
+}
+
+static size_t enable_write( struct device *dev , struct device_attribute *attr , char *buf , size_t count )
+{
+	unsigned long vdat;
+	int i;
+	int data;
+	struct ideapad_private *priv = dev_get_drvdata(&acpi_device_global->dev);
+
+	sscanf( buf , "%d\n" , &device_enable );
+
+	for ( i = EVENT_WIRELESS ; i <= EVENT_BLUETOOTH ; i++ )
+	{
+		if ( test_bit( i-2 , (unsigned long *)&device_enable) )
+			data = 1;
+		else
+			data = 0;
+
+		printk(" before: bit %d = %d, data = %d\n", i - 2 , test_bit( i-2 , (unsigned long *)&device_enable) , data);
+
+		
+		if (write_ec_cmd( ideapad_handle , (socket_cmd[i].r_cmd+1) , data ))
+                {
+                        printk("write cmd %x failure!\n", (socket_cmd[i].r_cmd+1) );
+                }
+
+		if (read_ec_data( ideapad_handle , socket_cmd[i].r_cmd , &vdat))
+        	{	
+                	printk("read cmd %x failure!\n", (socket_cmd[i].r_cmd) );
+                }
+		
+		device_enable = ( device_enable & ~( 1  << (i-2)))  |  ( vdat << (i-2)) ;
+
+		printk(" after: device_enable =  %d , vdat =  %d\n", device_enable , vdat);	
+
+		//sync rfkill state
+		if( i == EVENT_WIRELESS )
+			rfkill_set_hw_state(priv->rfk[0], !vdat);
+   
+	}
+
+	return count;
+}
+
+static DEVICE_ATTR(enable, 0666, enable_read , enable_write);
+
+static int debug_msg_enable = 0;
+
+//for show debug message
+static size_t debug_read( struct device *dev , struct device_attribute *attr , char *buf , size_t count )
+{
+	return sprintf(buf, "%d\n", debug_msg_enable);
+}
+
+static size_t debug_write( struct device *dev , struct device_attribute *attr , char *buf , size_t count )
+{
+        sscanf(buf, "%d", &debug_msg_enable);
+        return count;
+}
+
+static DEVICE_ATTR(debug_msg, 0666, debug_read , debug_write);
+
 static struct attribute *ideapad_attributes[] = {
 	&dev_attr_camera_power.attr,
 	&dev_attr_cfg.attr,
+	&dev_attr_device.attr,  //mike add
+	&dev_attr_enable.attr,  //mike add
+	&dev_attr_debug_msg.attr,	//mike add
 	NULL
 };
+
+/************ end ***************/
 
 static mode_t ideapad_is_visible(struct kobject *kobj,
 				 struct attribute *attr,
@@ -287,6 +439,7 @@ static int __devinit ideapad_register_rfkill(struct acpi_device *adevice,
 		/* Force to enable bluetooth when no_bt_rfkill=1 */
 		write_ec_cmd(ideapad_handle,
 			     ideapad_rfk_data[dev].opcode, 1);
+		printk("@@@ bluetooth @@@\n");
 		return 0;
 	}
 
@@ -511,6 +664,101 @@ static void ideapad_backlight_notify_brightness(struct ideapad_private *priv)
 	backlight_force_update(priv->blightdev, BACKLIGHT_UPDATE_HOTKEY);
 }
 
+/******** mike 20110901 *********/
+
+static int read_status( acpi_handle handle  , int dev_type )
+{
+	unsigned long vdat;
+	struct sk_buff *skb = NULL;
+        struct nlmsghdr *nlh;
+	char key_str[16];
+
+	//read device status from EC first
+	if( dev_type < 10 )
+	{
+		//read device status from EC first
+		if (read_ec_data(handle, socket_cmd[dev_type].r_cmd , &vdat))
+		{
+			printk("\n@@@ read ec fail, device is %d", dev_type);
+        		return -1;
+		}
+	}
+
+	if(debug_msg_enable)
+		printk("\n@@@ read: %d status is %d", dev_type ,vdat);
+	
+	//prepare to send socket
+	skb = alloc_skb(NLMSG_SPACE(1024), GFP_ATOMIC);
+        if(!skb)
+	{
+		printk(KERN_ERR"\n@@@ allocate skb fail!");
+		return -1;
+	}	
+	nlh = NLMSG_PUT(skb , 0 , 0 , NLMSG_DONE , NLMSG_SPACE(1024));
+
+
+	switch(dev_type)
+	{
+		case EVENT_WIRELESS:	//wireless on/off	, 12/13
+		case EVENT_TOUCHPAD:	//touchpad on/off 	, 12/13
+
+			if( vdat == 0 )
+			{
+				sprintf(key_str, "%s", socket_cmd[dev_type].on_cmd ); 
+	                        strncpy(NLMSG_DATA(nlh) , key_str , socket_cmd[dev_type].on_cmd_len + 1 ); 
+			}
+			else
+			{
+ 				sprintf(key_str, "%s", socket_cmd[dev_type].off_cmd ); 
+	                        strncpy(NLMSG_DATA(nlh) , key_str , socket_cmd[dev_type].off_cmd_len + 1 );
+			}
+			break;
+
+		//inverse
+		case EVENT_CAMARA:	//camara on/off		, 10/11
+		case EVENT_KILLSW:      //killsw on/off         , 10/11
+
+			if( vdat == 0 )
+                        {
+                                sprintf(key_str, "%s", socket_cmd[dev_type].off_cmd );
+                                strncpy(NLMSG_DATA(nlh) , key_str , socket_cmd[dev_type].off_cmd_len + 1 );
+                        }
+                        else
+                        {
+                                sprintf(key_str, "%s", socket_cmd[dev_type].on_cmd );
+                                strncpy(NLMSG_DATA(nlh) , key_str , socket_cmd[dev_type].on_cmd_len + 1 );
+                        }
+                        break;
+
+		case EVENT_RESOL_CHANGE:
+			sprintf(key_str, "resol change" );
+                        strncpy(NLMSG_DATA(nlh) , key_str , 13 );
+			break;
+
+		case EVENT_BRIGHTNESS:
+			sprintf(key_str, "brightness" );
+                        strncpy(NLMSG_DATA(nlh) , key_str , 11 );
+			break;
+
+		default:
+			break;
+	}
+
+	NETLINK_CB(skb).dst_group = 1;
+
+	if (lenovo_sock == NULL)
+		printk("\n@@@ lenovo_sock is null!");
+	else
+		netlink_broadcast(lenovo_sock , skb , 0 , 1 , GFP_KERNEL );
+		
+	return 0;
+
+nlmsg_failure:
+	printk(KERN_ERR"\n@@@ mike!");
+}
+/************ end ***************/
+
+
 /*
  * module init/exit
  */
@@ -535,6 +783,9 @@ static int __devinit ideapad_acpi_add(struct acpi_device *adevice)
 	dev_set_drvdata(&adevice->dev, priv);
 	ideapad_handle = adevice->handle;
 	priv->cfg = cfg;
+
+	//set acpi device global , mike add
+	acpi_device_global = adevice;
 
 	ret = ideapad_platform_init(priv);
 	if (ret)
@@ -563,7 +814,8 @@ static int __devinit ideapad_acpi_add(struct acpi_device *adevice)
 backlight_failed:
 	for (i = 0; i < IDEAPAD_RFKILL_DEV_NUM; i++)
 		ideapad_unregister_rfkill(adevice, i);
-	ideapad_input_exit(priv);
+	ideapad_input_exit(priv);   
+
 input_failed:
 	ideapad_platform_exit(priv);
 platform_failed:
@@ -579,6 +831,7 @@ static int __devexit ideapad_acpi_remove(struct acpi_device *adevice, int type)
 	ideapad_backlight_exit(priv);
 	for (i = 0; i < IDEAPAD_RFKILL_DEV_NUM; i++)
 		ideapad_unregister_rfkill(adevice, i);
+
 	ideapad_input_exit(priv);
 	ideapad_platform_exit(priv);
 	dev_set_drvdata(&adevice->dev, NULL);
@@ -598,21 +851,77 @@ static void ideapad_acpi_notify(struct acpi_device *adevice, u32 event)
 	if (read_ec_data(handle, 0x1A, &vpc2))
 		return;
 
+	if(debug_msg_enable)
+		printk("@@@ acpi event: %d\n", event);
+
 	vpc1 = (vpc2 << 8) | vpc1;
 	for (vpc_bit = 0; vpc_bit < 16; vpc_bit++) {
 		if (test_bit(vpc_bit, &vpc1)) {
-			switch (vpc_bit) {
-			case 9:
-				ideapad_sync_rfk_state(adevice);
-				break;
-			case 4:
-				ideapad_backlight_notify_brightness(priv);
-				break;
-			case 2:
-				ideapad_backlight_notify_power(priv);
-				break;
-			default:
-				ideapad_input_report(priv, vpc_bit);
+
+/******** mike 20110901 *********/
+			if(debug_msg_enable)
+				printk("@@@ vpc bit %d\n", vpc_bit);
+
+
+			switch( vpc_bit )
+			{
+				
+				case 0:
+					printk("\none key!");
+					break;
+                                case 1:
+                                        printk("\ngeneral!");
+                                        break;
+				
+				case 2:
+					//ideapad_backlight_notify_power(priv);
+                                        printk("\nInverter: Fn+F2 press!");
+                                        break;
+				case 3:
+					printk("\nNovo!");
+					break;
+				case 4:
+					ideapad_backlight_notify_brightness(priv);
+					read_status( ideapad_handle , EVENT_BRIGHTNESS );
+					printk("\nBrightness: Fn+up or down  press!");	
+					break;	
+				case 5:
+					printk("\nTouchPad: Fn+F6 press!");
+					read_status( ideapad_handle , EVENT_TOUCHPAD );
+					break;
+				case 6:
+					printk("\nDisplay!");
+					break;		
+				case 7:	
+					printk("\nCamera: Fn+Esc press!");
+					read_status( ideapad_handle , EVENT_CAMARA );
+					
+					break;		
+				case 9:
+					ideapad_sync_rfk_state(adevice);
+					read_status( ideapad_handle , EVENT_KILLSW );
+					printk("\nKill sw!");
+					break;
+				
+				case 10:
+					printk("\nUser self define!");
+					break;
+				case 11:
+					printk("\nswitch display resolution: Fn+F4 press!");
+					read_status( ideapad_handle , EVENT_RESOL_CHANGE );
+                                        break;
+                                case 12:
+                                        printk("\nswitch EQ");
+				        break;	                                
+				case 13:
+                                        printk("\nApp control RF!");
+					read_status( ideapad_handle , EVENT_WIRELESS );
+                                        break;
+				
+				default:
+					ideapad_input_report(priv, vpc_bit);
+					break;
+/************ end ***************/
 			}
 		}
 	}
@@ -628,14 +937,33 @@ static struct acpi_driver ideapad_acpi_driver = {
 	.owner = THIS_MODULE,
 };
 
+
+
 static int __init ideapad_acpi_module_init(void)
 {
+
+/******** mike 20110901 *********/
+
+        lenovo_sock = netlink_kernel_create ( &init_net , NETLINK_LITE_HOTKEY , 0 , NULL, NULL, THIS_MODULE );
+        if(lenovo_sock == NULL)
+	{
+                printk(KERN_ERR"\n@@@@ create lenovo netlink sock fail!");
+	}
+	else
+	{	
+		printk(KERN_ERR"\n@@@@ create lenovo netlink sock success!");
+	}
+
+/************ end ***************/
 	return acpi_bus_register_driver(&ideapad_acpi_driver);
 }
 
 static void __exit ideapad_acpi_module_exit(void)
 {
 	acpi_bus_unregister_driver(&ideapad_acpi_driver);
+	/******** mike 2011-10-21 *********/	
+	sock_release(lenovo_sock->sk_socket);
+	/************ end ***************/
 }
 
 MODULE_AUTHOR("David Woodhouse <dwmw2@infradead.org>");
