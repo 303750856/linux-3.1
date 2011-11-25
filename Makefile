@@ -1,6 +1,6 @@
 VERSION = 3
 PATCHLEVEL = 1
-SUBLEVEL = 0
+SUBLEVEL = 2
 EXTRAVERSION =
 NAME = "Divemaster Edition"
 
