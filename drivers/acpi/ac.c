@@ -35,6 +35,9 @@
 #include <linux/power_supply.h>
 #include <acpi/acpi_bus.h>
 #include <acpi/acpi_drivers.h>
+//marstian@linpus.com
+#include <acpi/marstian.h>
+struct acpi_ac *marstian_ac;
 
 #define PREFIX "ACPI: "
 
@@ -89,7 +92,7 @@ struct acpi_ac {
 	unsigned long long state;
 };
 
-#define to_acpi_ac(x) container_of(x, struct acpi_ac, charger)
+#define to_acpi_ac(x) container_of(x, struct acpi_ac, charger);
 
 #ifdef CONFIG_ACPI_PROCFS_POWER
 static const struct file_operations acpi_ac_fops = {
@@ -151,6 +154,37 @@ static int get_ac_property(struct power_supply *psy,
 static enum power_supply_property ac_props[] = {
 	POWER_SUPPLY_PROP_ONLINE,
 };
+int marstian_acpi_ac_show(void)
+{
+	struct acpi_ac *ac = marstian_ac;
+
+
+	if (!ac)
+		return 0;
+
+	if (acpi_ac_get_state(ac)) {
+		printk("ERROR: Unable to read AC Adapter state\n");
+		return 0;
+	}
+
+	switch (ac->state) {
+	case ACPI_AC_STATUS_OFFLINE:
+		return (1);
+	//	seq_puts(seq, "off-line\n");
+		break;
+	case ACPI_AC_STATUS_ONLINE:
+		return (2);
+//		seq_puts(seq, "on-line\n");
+		break;
+	default:
+		return (3);
+//		seq_puts(seq, "unknown\n");
+		break;
+	}
+
+	return 0;
+}
+EXPORT_SYMBOL(marstian_acpi_ac_show);
 
 #ifdef CONFIG_ACPI_PROCFS_POWER
 /* --------------------------------------------------------------------------
@@ -162,6 +196,7 @@ static struct proc_dir_entry *acpi_ac_dir;
 static int acpi_ac_seq_show(struct seq_file *seq, void *offset)
 {
 	struct acpi_ac *ac = seq->private;
+	marstian_ac = ac;
 
 
 	if (!ac)
