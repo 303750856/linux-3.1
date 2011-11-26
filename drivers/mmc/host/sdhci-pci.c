@@ -963,8 +963,8 @@ static struct sdhci_pci_slot * __devinit sdhci_pci_probe_slot(
 	}
 
 	if (pci_resource_len(pdev, bar) != 0x100) {
-		dev_err(&pdev->dev, "Invalid iomem size. You may "
-			"experience problems.\n");
+//joe		dev_err(&pdev->dev, "Invalid iomem size. You may "
+//joe			"experience problems.\n");
 	}
 
 	if ((pdev->class & 0x0000FF) == PCI_SDHCI_IFVENDOR) {

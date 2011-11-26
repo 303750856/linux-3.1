@@ -1256,7 +1256,8 @@ static void intel_disable_transcoder(struct drm_i915_private *dev_priv,
 	I915_WRITE(reg, val);
 	/* wait for PCH transcoder off, transcoder state */
 	if (wait_for((I915_READ(reg) & TRANS_STATE_ENABLE) == 0, 50))
-		DRM_ERROR("failed to disable transcoder\n");
+		;
+		//joe DRM_ERROR("failed to disable transcoder\n");
 }
 
 /**
@@ -5172,7 +5173,7 @@ static void ironlake_update_pch_refclk(struct drm_device *dev)
 		} else {
 			/* Enable SSC on PCH eDP if needed */
 			if (intel_panel_use_ssc(dev_priv)) {
-				DRM_ERROR("enabling SSC on PCH\n");
+	//joe		DRM_ERROR("enabling SSC on PCH\n");
 				temp |= DREF_SUPERSPREAD_SOURCE_ENABLE;
 			}
 		}

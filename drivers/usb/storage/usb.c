@@ -308,8 +308,10 @@ static int usb_stor_control_thread(void * __us)
 		 */
 		else if (us->srb->device->id && 
 				!(us->fflags & US_FL_SCM_MULT_TARG)) {
+		/* joe marked for boot messages
 			US_DEBUGP("Bad target number (%d:%d)\n",
 				  us->srb->device->id, us->srb->device->lun);
+		*/
 			us->srb->result = DID_BAD_TARGET << 16;
 		}
 
