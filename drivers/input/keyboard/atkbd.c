@@ -46,7 +46,7 @@ struct linpus_atkbd
 	int keycode;
 	int mask;
 }
-linpus_keycode [16];
+linpus_keycode [32];
 /*
 {
 	{113	, 1},
@@ -392,13 +392,17 @@ static ssize_t new_on_store(struct device *d, struct device_attribute *attr,
 
         sscanf(b, "%d", &mask_and_keycode);
 	
-	if(keycode_count < 15 && mask_and_keycode > 1000 && mask_and_keycode < 2560 )
+	if(keycode_count < 31 && mask_and_keycode > 100 && mask_and_keycode < 2560 )
 	{
 		linpus_keycode[keycode_count].keycode = mask_and_keycode / 10;
 		linpus_keycode[keycode_count].mask = mask_and_keycode  % 10;
 		keycode_count++;
+		printk("@@@ %d: add keycode %d success!\n", keycode_count , mask_and_keycode);
 	}
-	printk("@@@ add keycode failure!\n");
+	else
+	{
+		printk("@@@ %d: add keycode %d failure!\n", keycode_count , mask_and_keycode);
+	}
 
         return count;
 }

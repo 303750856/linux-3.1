@@ -61,6 +61,7 @@
 
 #define EVENT_RESOL_CHANGE	10
 #define EVENT_BRIGHTNESS	11
+#define EVENT_DISPLAY_SW	12
 
 
 static struct {
@@ -646,6 +647,8 @@ static void ideapad_backlight_notify_power(struct ideapad_private *priv)
 	unsigned long power;
 	struct backlight_device *blightdev = priv->blightdev;
 
+	if (!blightdev)
+		return;
 	if (read_ec_data(ideapad_handle, 0x18, &power))
 		return;
 	blightdev->props.power = power ? FB_BLANK_UNBLANK : FB_BLANK_POWERDOWN;
@@ -734,6 +737,11 @@ static int read_status( acpi_handle handle  , int dev_type )
 			sprintf(key_str, "resol change" );
                         strncpy(NLMSG_DATA(nlh) , key_str , 13 );
 			break;
+
+		case EVENT_DISPLAY_SW:
+                        sprintf(key_str, "display" );
+                        strncpy(NLMSG_DATA(nlh) , key_str , 8 );
+                        break;
 
 		case EVENT_BRIGHTNESS:
 			sprintf(key_str, "brightness" );
@@ -891,6 +899,7 @@ static void ideapad_acpi_notify(struct acpi_device *adevice, u32 event)
 					break;
 				case 6:
 					printk("\nDisplay!");
+					read_status( ideapad_handle , EVENT_DISPLAY_SW );
 					break;		
 				case 7:	
 					printk("\nCamera: Fn+Esc press!");
