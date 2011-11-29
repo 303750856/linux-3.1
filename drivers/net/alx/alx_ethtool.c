@@ -110,7 +110,7 @@ static int alx_set_settings(struct net_device *netdev,
 	} else {
 		if (ecmd->speed == SPEED_1000) {
 			if (ecmd->duplex != DUPLEX_FULL) {
-				DRV_PRINT(ETHTOOL, WARNING,
+				dev_warn(&adpt->pdev->dev,
 					"1000M half is invalid\n");
 				clear_bit(__ALX_RESETTING, &adpt->alx_state);
 				return -EINVAL;
@@ -137,7 +137,7 @@ static int alx_set_settings(struct net_device *netdev,
 	error = hw->cbs.setup_phy_link_speed(hw, advertised, true,
 			!hw->disable_fc_autoneg);
 	if (error) {
-		DRV_PRINT(ETHTOOL, INFO,
+		dev_err(&adpt->pdev->dev,
 				"setup link failed with code %d\n", error);
 		hw->cbs.setup_phy_link_speed(hw, old, true,
 				!hw->disable_fc_autoneg);
@@ -446,7 +446,7 @@ static void alx_get_wol(struct net_device *netdev,
 	if (adpt->wol & ALX_WOL_PHY)
 		wol->wolopts |= WAKE_PHY;
 
-	DRV_PRINT(ETHTOOL, INFO, "wol->wolopts = %x.\n", wol->wolopts);
+	alx_netif_info(adpt, WOL, "wol->wolopts = %x.\n", wol->wolopts);
 
 	return;
 }

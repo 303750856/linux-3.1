@@ -250,8 +250,9 @@ u16 l1f_reset_phy(PETHCONTEXT ctx, bool pws_en, bool az_en, bool ptp_en)
 		    L1F_LEGCYPS_DEF);
 		l1f_write_phydbg(ctx, true, L1F_MIIDBG_SYSMODCTRL,
 		    L1F_SYSMODCTRL_IECHOADJ_DEF);
-		l1f_write_phy(ctx, true, L1F_MIIEXT_PCS, true,
+	 	l1f_write_phy(ctx, true, L1F_MIIEXT_PCS, true,
 		    L1F_MIIEXT_VDRVBIAS, L1F_VDRVBIAS_DEF);
+		    
 	} else {
 		l1f_write_phydbg(ctx, true, L1F_MIIDBG_LEGCYPS,
 		    L1F_LEGCYPS_DEF & ~L1F_LEGCYPS_EN);

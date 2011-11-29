@@ -103,7 +103,7 @@ int alf_read_phy_reg(struct alx_hw *hw, u32 device_type,
 	error = l1f_read_phy(hw, ext, device_type, fast,
 			     reg_addr, phy_data);
 	if (error) {
-		HW_PRINT(ERR, "Error when reading phy reg (%d).", error);
+		alx_hw_err(hw, "Error when reading phy reg (%d).", error);
 		retval = ALX_ERR_PHY_READ_REG;
 	}
 
@@ -128,7 +128,7 @@ int alf_write_phy_reg(struct alx_hw *hw, u32 device_type,
 	error = l1f_write_phy(hw, ext, device_type, fast,
 			      reg_addr, phy_data);
 	if (error) {
-		HW_PRINT(ERR, "Error when writting phy reg (%d).", error);
+		alx_hw_err(hw, "Error when writting phy reg (%d).", error);
 		retval = ALX_ERR_PHY_WRITE_REG;
 	}
 
@@ -144,8 +144,6 @@ int alf_init_phy(struct alx_hw *hw)
 	u16 phy_id[2];
 	int retval = 0;
 
-	HW_PRINT(DEBUG, "ENTER\n");
-
 	/* 1. init mdio spin lock */
 	ALX_MDIO_LOCK_INIT(&hw->mdio_lock);
 
@@ -160,11 +158,11 @@ int alf_init_phy(struct alx_hw *hw)
 		return retval;
 	memcpy(&hw->phy_id, phy_id, sizeof(hw->phy_id));
 
-	hw->autoneg_advertised = (ALX_LINK_SPEED_1GB_FULL |
-				  ALX_LINK_SPEED_10_HALF  |
-				  ALX_LINK_SPEED_10_FULL  |
-				  ALX_LINK_SPEED_100_HALF |
-				  ALX_LINK_SPEED_100_FULL);
+	hw->autoneg_advertised = ALX_LINK_SPEED_1GB_FULL |
+				 ALX_LINK_SPEED_10_HALF  |
+				 ALX_LINK_SPEED_10_FULL  |
+				 ALX_LINK_SPEED_100_HALF |
+				 ALX_LINK_SPEED_100_FULL;
 	return retval;
 }
 
@@ -173,9 +171,6 @@ int alf_reset_phy(struct alx_hw *hw)
 {
 	int retval = 0;
 	bool pws_en, az_en, ptp_en;
-	u32 phy;
-
-	HW_PRINT(DEBUG, "ENTER\n");
 
 	pws_en = az_en = ptp_en = false;
 	CLI_HW_FLAG(PWSAVE_EN);
@@ -197,14 +192,10 @@ int alf_reset_phy(struct alx_hw *hw)
 		SET_HW_FLAG(PTP_EN);
 	}
 
-	HW_PRINT(INFO, "reset PHY, pws = %d, az = %d, ptp = %d\n",
-		 pws_en, az_en, ptp_en);
+	alx_hw_info(hw, "reset PHY, pws = %d, az = %d, ptp = %d\n",
+		    pws_en, az_en, ptp_en);
 	if (l1f_reset_phy(hw, pws_en, az_en, ptp_en))
 		retval = ALX_ERR_PHY_RESET;
-
-	MEM_R32(hw, L1F_PHY_CTRL, &phy);
-	HW_PRINT(INFO, "Parameters When reset PHY, phy reg = 0x%x\n",
-		 phy);
 
 	return retval;
 }
@@ -216,9 +207,7 @@ int alf_setup_phy_link(struct alx_hw *hw, u32 speed, bool autoneg, bool fc)
 	u8 link_cap = 0;
 	int retval = 0;
 
-	HW_PRINT(DEBUG, "ENTER\n");
-
-	HW_PRINT(INFO, "speed = 0x%x, autoneg = %d\n", speed, autoneg);
+	alx_hw_info(hw, "speed = 0x%x, autoneg = %d\n", speed, autoneg);
 	if (speed & ALX_LINK_SPEED_1GB_FULL)
 		link_cap |= LX_LC_1000F;
 
@@ -247,8 +236,6 @@ int alf_setup_phy_link_speed(struct alx_hw *hw, u32 speed,
 			     bool autoneg, bool fc)
 {
 	int retval = 0;
-
-	HW_PRINT(DEBUG, "ENTER\n");
 
 	/*
 	 * Clear autoneg_advertised and set new values based on input link
@@ -285,8 +272,6 @@ int alf_check_phy_link(struct alx_hw *hw, u32 *speed, bool *link_up)
 	u16 bmsr, giga;
 	int retval;
 
-	HW_PRINT(DEBUG, "ENTER\n");
-
 	alf_read_phy_reg(hw, ALX_MDIO_NORM_DEV, L1F_MII_BMSR, &bmsr);
 	retval = alf_read_phy_reg(hw, ALX_MDIO_NORM_DEV,
 				  L1F_MII_BMSR, &bmsr);
@@ -316,7 +301,7 @@ int alf_check_phy_link(struct alx_hw *hw, u32 *speed, bool *link_up)
 		if (giga & L1F_GIGA_PSSR_DPLX)
 			*speed = ALX_LINK_SPEED_1GB_FULL;
 		else
-			HW_PRINT(ERR, "1000M half is invalid");
+			alx_hw_err(hw, "1000M half is invalid");
 		break;
 	case L1F_GIGA_PSSR_100MBS:
 		if (giga & L1F_GIGA_PSSR_DPLX)
@@ -350,8 +335,6 @@ int alf_reset_mac(struct alx_hw *hw)
 {
 	int retval = 0;
 
-	HW_PRINT(DEBUG, "ENTER\n");
-
 	if (l1f_reset_mac(hw))
 		retval = ALX_ERR_MAC_RESET;
 	return retval;
@@ -362,8 +345,6 @@ int alf_start_mac(struct alx_hw *hw)
 {
 	u16 en_ctrl = 0;
 	int retval = 0;
-
-	HW_PRINT(DEBUG, "ENTER\n");
 
 	/* set link speed param */
 	switch (hw->link_speed) {
@@ -409,7 +390,6 @@ int alf_start_mac(struct alx_hw *hw)
 	if (CHK_HW_FLAG(MULTIALL_EN))
 		en_ctrl |= LX_FLT_MULTI_ALL;
 
-
 	if (l1f_enable_mac(hw, true, en_ctrl))
 		retval = ALX_ERR_MAC_START;
 	return retval;
@@ -423,8 +403,6 @@ int alf_start_mac(struct alx_hw *hw)
 int alf_stop_mac(struct alx_hw *hw)
 {
 	int retval = 0;
-
-	HW_PRINT(DEBUG, "ENTER\n");
 
 	if (l1f_enable_mac(hw, false, 0))
 		retval = ALX_ERR_MAC_STOP;
@@ -448,8 +426,6 @@ int alf_config_mac(struct alx_hw *hw, u16 rxbuf_sz, u16 rx_qnum,
 #if MAC_TYPE_FPGA == MAC_TYPE
 	u32 phy;
 #endif
-
-	HW_PRINT(DEBUG, "ENTER\n");
 
 	addr = hw->mac_addr;
 
@@ -492,8 +468,6 @@ int alf_get_mac_addr(struct alx_hw *hw, u8 *addr)
 {
 	int retval = 0;
 
-	HW_PRINT(DEBUG, "ENTER\n");
-
 	if (l1f_get_perm_macaddr(hw, addr))
 		retval = ALX_ERR_MAC_ADDR;
 	return retval;
@@ -503,8 +477,6 @@ int alf_get_mac_addr(struct alx_hw *hw, u8 *addr)
 int alf_reset_pcie(struct alx_hw *hw, bool l0s_en, bool l1_en)
 {
 	int retval = 0;
-
-	HW_PRINT(DEBUG, "ENTER\n");
 
 	if (!CHK_HW_FLAG(L0S_CAP))
 		l0s_en = false;
@@ -536,8 +508,6 @@ int alf_config_aspm(struct alx_hw *hw, bool l0s_en, bool l1_en)
 {
 	int retval = 0;
 
-	HW_PRINT(DEBUG, "ENTER\n");
-
 	if (!CHK_HW_FLAG(L0S_CAP))
 		l0s_en = false;
 
@@ -568,8 +538,6 @@ int alf_config_wol(struct alx_hw *hw, u32 wufc)
 	u32 wol;
 	int retval = 0;
 
-	HW_PRINT(DEBUG, "ENTER\n");
-
 	wol = 0;
 	/* turn on magic packet event */
 	if (wufc & ALX_WOL_MAGIC) {
@@ -595,8 +563,6 @@ int alf_config_wol(struct alx_hw *hw, u32 wufc)
 int alf_config_mac_ctrl(struct alx_hw *hw)
 {
 	u32 mac;
-
-	HW_PRINT(DEBUG, "ENTER\n");
 
 	MEM_R32(hw, L1F_MAC_CTRL, &mac);
 
@@ -625,8 +591,6 @@ int alf_config_pow_save(struct alx_hw *hw, u32 speed, bool wol_en,
 {
 	u8 wire_spd = LX_LC_10H;
 	int retval = 0;
-
-	HW_PRINT(DEBUG, "ENTER\n");
 
 	switch (speed) {
 	case ALX_LINK_SPEED_UNKNOWN:
@@ -660,8 +624,6 @@ int alf_set_mac_addr(struct alx_hw *hw, u8 *addr)
 	u32 sta;
 	int retval = 0;
 
-	HW_PRINT(DEBUG, "ENTER\n");
-
 	/*
 	 * for example: 00-0B-6A-F6-00-DC
 	 * 0<-->6AF600DC, 1<-->000B.
@@ -680,8 +642,7 @@ int alf_set_mac_addr(struct alx_hw *hw, u8 *addr)
 
 int alf_clear_mac_addr(struct alx_hw *hw)
 {
-	int retval = 0;
-	return retval;
+	return 0;
 }
 
 int alf_set_mc_addr(struct alx_hw *hw, u8 *addr)
@@ -689,8 +650,6 @@ int alf_set_mc_addr(struct alx_hw *hw, u8 *addr)
 	u32 crc32;
 	u32 bit, reg;
 	u32 mta;
-
-	HW_PRINT(DEBUG, "ENTER\n");
 
 	/*
 	* set hash value for a multicast address hash calcu processing.
@@ -720,9 +679,6 @@ int alf_set_mc_addr(struct alx_hw *hw, u8 *addr)
 
 int alf_clear_mc_addr(struct alx_hw *hw)
 {
-
-	HW_PRINT(DEBUG, "ENTER\n");
-
 	MEM_W32(hw, L1F_HASH_TBL0, 0);
 	MEM_W32(hw, L1F_HASH_TBL1, 0);
 	return 0;
@@ -732,17 +688,13 @@ int alf_clear_mc_addr(struct alx_hw *hw)
 /* TX, RX, IRQ */
 int alf_config_rx(struct alx_hw *hw)
 {
-	int retval = 0;
-	return retval;
+	return 0;
 }
 
 
 int alf_config_tx(struct alx_hw *hw)
 {
 	u32 wrr;
-	int retval = 0;
-
-	HW_PRINT(DEBUG, "ENTER\n");
 
 	MEM_R32(hw, L1F_WRR, &wrr);
 	switch (hw->wrr_mode) {
@@ -765,7 +717,7 @@ int alf_config_tx(struct alx_hw *hw)
 	FIELD_SETL(wrr, L1F_WRR_PRI3, hw->wrr_prio3);
 	MEM_W32(hw, L1F_WRR, wrr);
 
-	return retval;
+	return 0;
 }
 
 
@@ -775,9 +727,6 @@ int alf_config_msix(struct alx_hw *hw, u16 num_intrs,
 	u32 map[2];
 	u32 type;
 	int msix_idx;
-	int retval = 0;
-
-	HW_PRINT(DEBUG, "ENTER\n");
 
 	if (!msix_en)
 		goto configure_legacy;
@@ -869,7 +818,7 @@ int alf_config_msix(struct alx_hw *hw, u16 num_intrs,
 		L1F_MSI_ID_MAP_PCIEUR);
 
 	MEM_W32(hw, L1F_MSI_ID_MAP, type);
-	return retval;
+	return 0;
 
 configure_legacy:
 	MEM_W32(hw, L1F_MSI_MAP_TBL1, 0x0);
@@ -881,7 +830,7 @@ configure_legacy:
 		msi |= 0x10000;
 		MEM_W32(hw, 0x1920, msi);
 	}
-	return retval;
+	return 0;
 }
 
 /*
@@ -890,21 +839,13 @@ configure_legacy:
 
 int alf_ack_phy_intr(struct alx_hw *hw)
 {
-	int retval = 0;
-	u16 isr = 0;
-
-	HW_PRINT(DEBUG, "ENTER\n");
-
-	retval = alf_read_phy_reg(hw, ALX_MDIO_NORM_DEV,
-				  L1F_MII_ISR, &isr);
-	return retval;
+	u16 isr;
+	return alf_read_phy_reg(hw, ALX_MDIO_NORM_DEV, L1F_MII_ISR, &isr);
 }
 int alf_enable_legacy_intr(struct alx_hw *hw)
 {
 	int retval = 0;
 	u16 cmd;
-
-	HW_PRINT(DEBUG, "ENTER\n");
 
 	CFG_R16(hw, L1F_PCI_CMD, &cmd);
 	cmd &= ~L1F_PCI_CMD_DISINT;
@@ -920,8 +861,6 @@ int alf_disable_legacy_intr(struct alx_hw *hw)
 {
 	int retval = 0;
 
-	HW_PRINT(DEBUG, "ENTER\n");
-
 	MEM_W32(hw, L1F_ISR, L1F_ISR_DIS);
 	MEM_W32(hw, L1F_IMR, 0);
 
@@ -936,8 +875,6 @@ int alf_enable_msix_intr(struct alx_hw *hw, u8 entry_idx)
 	u32 ctrl_val = 0x0;
 	int retval = 0;
 
-	HW_PRINT(DEBUG, "ENTER\n");
-
 	ctrl_reg = ALF_MSIX_ENTRY_BASE + (entry_idx * ALF_MSIX_ENTRY_SIZE) +
 		   ALF_MSIX_MSG_CTRL_OFF;
 
@@ -951,8 +888,6 @@ int alf_disable_msix_intr(struct alx_hw *hw, u8 entry_idx)
 	u32 ctrl_reg;
 	u32 ctrl_val = 0x1;
 	int retval = 0;
-
-	HW_PRINT(DEBUG, "ENTER\n");
 
 	ctrl_reg = ALF_MSIX_ENTRY_BASE + (entry_idx * ALF_MSIX_ENTRY_SIZE) +
 		   ALF_MSIX_MSG_CTRL_OFF;
@@ -972,8 +907,6 @@ int alf_config_rss(struct alx_hw *hw, bool rss_en)
 	u32 rxq0;
 	int i;
 	int retval = 0;
-
-	HW_PRINT(DEBUG, "ENTER\n");
 
 	/* Fill out hash function keys */
 	for (i = 0; i < key_len_by_u8; i++) {
@@ -1067,8 +1000,6 @@ int alf_config_fc(struct alx_hw *hw)
 	u32 mac;
 	int retval = 0;
 
-	HW_PRINT(DEBUG, "ENTER\n");
-
 	if (hw->disable_fc_autoneg) {
 		hw->fc_was_autonegged = false;
 		hw->cur_fc_mode = hw->req_fc_mode;
@@ -1098,7 +1029,7 @@ int alf_config_fc(struct alx_hw *hw)
 		mac |= (L1F_MAC_CTRL_TXFC_EN | L1F_MAC_CTRL_RXFC_EN);
 		break;
 	default:
-		HW_PRINT(ERR, "Flow control param set incorrectly\n");
+		alx_hw_err(hw, "Flow control param set incorrectly\n");
 		retval = ALX_ERR_FLOW_CONTROL;
 		break;
 	}
@@ -1122,7 +1053,7 @@ int alf_check_nvram(struct alx_hw *hw, bool *exist)
 /* ethtool */
 int alf_get_ethtool_regs(struct alx_hw *hw, void *buff)
 {
-	u32 *regs = (u32 *)buff;
+	u32 *regs = buff;
 	int i;
 	int retval = 0;
 
@@ -1362,7 +1293,7 @@ int alf_init_hw_callbacks(struct alx_hw *hw)
 	retval = alf_set_hw_infos(hw);
 
 	/* print hw flags */
-	HW_PRINT(INFO, "HW Flags = 0x%x\n", hw->flags);
+	alx_hw_info(hw, "HW Flags = 0x%x\n", hw->flags);
 	return retval;
 }
 

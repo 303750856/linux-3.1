@@ -14,11 +14,27 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
+
+#include <linux/tcp.h>
+#include <linux/ipv6.h>
+#include <linux/interrupt.h>
+
+#ifdef NETIF_F_TSO
+#include <net/checksum.h>
+#ifdef NETIF_F_TSO6
+#include <net/ip6_checksum.h>
+#endif
+#endif
+
 #include "alx.h"
 #include "alx_hwcom.h"
 
-#define DRV_VERSION "1.0.0.0"
+#define DRV_VERSION "2.0.0.4-linpus"
+#ifndef CONFIG_ALX_NAPI
+#define DRV_NAPI
+#else
 #define DRV_NAPI "-NAPI"
+#endif
 #define DRV_VERSION_FULL DRV_VERSION DRV_NAPI
 
 char alx_drv_name[] = "alx";
@@ -48,9 +64,21 @@ DEFINE_PCI_DEVICE_TABLE(alx_pci_tbl) = {
 	ALX_ETHER_DEVICE(ALX_DEV_ID_AR8152_V1),
 	ALX_ETHER_DEVICE(ALX_DEV_ID_AR8152_V2),
 	ALX_ETHER_DEVICE(ALX_DEV_ID_AR8161),
+	ALX_ETHER_DEVICE(ALX_DEV_ID_AR8162),
 	{0,}
 };
 MODULE_DEVICE_TABLE(pci, alx_pci_tbl);
+
+#ifdef USE_REBOOT_NOTIFIER
+static int alx_notify_reboot(struct notifier_block *,
+		unsigned long event, void *p);
+
+struct notifier_block reboot_notifier = {
+	.notifier_call  = alx_notify_reboot,
+	.next       = NULL,
+	.priority   = 0
+};
+#endif
 
 MODULE_AUTHOR("Atheros Corporation, <cloud.ren@atheros.com>, "
 		"<xiong.huang@atheros.com>");
@@ -58,6 +86,21 @@ MODULE_DESCRIPTION("Atheros Gigabit Ethernet Driver");
 MODULE_LICENSE("Dual BSD/GPL");
 MODULE_VERSION(DRV_VERSION_FULL);
 
+
+
+int alx_cfg_r32(struct alx_hw *hw, int reg, u32 *pval)
+{
+	if (!(hw && hw->adpt && hw->adpt->pdev))
+		return -EINVAL;
+	return pci_read_config_dword(hw->adpt->pdev, reg, pval);
+}
+
+int alx_cfg_w32(struct alx_hw *hw, int reg, u32 val)
+{
+	if (!(hw && hw->adpt && hw->adpt->pdev))
+		return -EINVAL;
+	return pci_write_config_dword(hw->adpt->pdev, reg, val);
+}
 
 /*
  *  alx_validate_mac_addr - Validate MAC address
@@ -128,8 +171,8 @@ static int alx_set_mac_type(struct alx_adapter *adpt)
 		retval = ALX_ERR_NOT_SUPPORTED;
 	}
 
-	DRV_PRINT(HW, INFO, "found mac: %d, returns: %d\n",
-		  hw->mac_type, retval);
+	alx_netif_info(adpt, HW, "found mac: %d, returns: %d\n",
+		       hw->mac_type, retval);
 	return retval;
 }
 
@@ -211,7 +254,7 @@ static void alx_tx_timeout(struct net_device *netdev)
 {
 	struct alx_adapter *adpt = netdev_priv(netdev);
 
-	DRV_PRINT(FUNC, DEBUG, "ENTER\n");
+	alx_netif_dbg(adpt, DRV, "ENTER\n");
 
 	/* Do the reset outside of interrupt context */
 	if (!test_bit(__ALX_DOWN, &adpt->alx_state)) {
@@ -228,9 +271,13 @@ static void alx_set_multicase_list(struct net_device *netdev)
 {
 	struct alx_adapter *adpt = netdev_priv(netdev);
 	struct alx_hw *hw = &adpt->hw;
+#ifdef NETDEV_HW_ADDR_T_MULTICAST
 	struct netdev_hw_addr *mc_ptr;
+#else
+	struct dev_mc_list *mc_ptr;
+#endif
 
-	DRV_PRINT(FUNC, DEBUG, "ENTER\n");
+	alx_netif_dbg(adpt, DRV, "ENTER\n");
 
 	/* Check for Promiscuous and All Multicast modes */
 	if (netdev->flags & IFF_PROMISC) {
@@ -248,8 +295,13 @@ static void alx_set_multicase_list(struct net_device *netdev)
 	hw->cbs.clear_mc_addr(hw);
 
 	/* comoute mc addresses' hash value ,and put it into hash table */
+#ifdef NETDEV_HW_ADDR_T_MULTICAST
 	netdev_for_each_mc_addr(mc_ptr, netdev)
 		hw->cbs.set_mc_addr(hw, mc_ptr->addr);
+#else
+	for (mc_ptr = netdev->mc_list; mc_ptr; mc_ptr = mc_ptr->next)
+		hw->cbs.set_mc_addr(hw, mc_ptr->dmi_addr);
+#endif
 }
 
 /*
@@ -261,7 +313,7 @@ static int alx_set_mac_addr(struct net_device *netdev, void *data)
 	struct alx_hw *hw = &adpt->hw;
 	struct sockaddr *addr = data;
 
-	DRV_PRINT(FUNC, DEBUG, "ENTER\n");
+	alx_netif_dbg(adpt, DRV, "ENTER\n");
 
 	if (!is_valid_ether_addr(addr->sa_data))
 		return -EADDRNOTAVAIL;
@@ -370,8 +422,29 @@ static void alx_receive_skb(struct alx_msix_param *msix,
 		u16 vlan;
 		u16 vlan_tag = (u16)vlan_tag;
 		AT_TAG_TO_VLAN(vlan_tag, vlan);
+
+#ifdef CONFIG_ALX_NAPI
+#ifdef NETIF_F_HW_VLAN_TX
+		vlan_hwaccel_receive_skb(skb, adpt->vlgrp, vlan);
+#else
+		netif_receive_skb(skb);
+#endif
+#else	/* CONFIG_ALX_NAPI */
+#ifdef NETIF_F_HW_VLAN_TX
+	/*joe
+		vlan_hwaccel_rx(skb, adpt->vlgrp, vlan);
+	*/
+#else
+		netif_rx(skb);
+#endif
+#endif
+	} else {
+#ifdef CONFIG_ALX_NAPI
+		netif_receive_skb(skb);
+#else
+		netif_rx(skb);
+#endif
 	}
-	netif_receive_skb(skb);
 }
 
 static bool alx_get_rrdesc(struct alx_rx_queue *rxque,
@@ -488,7 +561,7 @@ static int alx_refresh_rx_buffer(struct alx_rx_queue *rxque)
 	while (next_rxbuf->dma == 0) {
 		skb = dev_alloc_skb(adpt->rxbuf_size);
 		if (unlikely(!skb)) {
-			DRV_PRINT(RX, INFO, "alloc rx buffer failed\n");
+			alx_err(adpt, "alloc rx buffer failed\n");
 			break;
 		}
 
@@ -519,10 +592,10 @@ static int alx_refresh_rx_buffer(struct alx_rx_queue *rxque)
 	if (count) {
 		wmb();
 		MEM_W16(hw, rxque->produce_reg, rxque->rfq.produce_idx);
-		DRV_PRINT(RX, INFO, "RX[%d]: prod_reg[0x%x] = 0x%x, "
-			  "rfq.produce_idx = 0x%x\n",
-			  rxque->que_idx, rxque->produce_reg,
-			  rxque->rfq.produce_idx, rxque->rfq.produce_idx);
+		alx_netif_info(adpt, RX_ERR, "RX[%d]: prod_reg[0x%x] = 0x%x, "
+			       "rfq.produce_idx = 0x%x\n",
+			       rxque->que_idx, rxque->produce_reg,
+			       rxque->rfq.produce_idx, rxque->rfq.produce_idx);
 	}
 	return count;
 }
@@ -545,6 +618,64 @@ static void alx_clean_rfdesc(struct alx_rx_queue *rxque,
 	return;
 }
 
+#if ALX_VALID_RSS
+
+static const u8 rss_key[40] = {
+	0xE2, 0x91, 0xD7, 0x3D, 0x18, 0x05, 0xEC, 0x6C,
+	0x2A, 0x94, 0xB3, 0x0D, 0xA5, 0x4F, 0x2B, 0xEC,
+	0xEA, 0x49, 0xAF, 0x7C, 0xE2, 0x14, 0xAD, 0x3D,
+	0xB8, 0x55, 0xAA, 0xBE, 0x6A, 0x3E, 0x67, 0xEA,
+	0x14, 0x36, 0x4D, 0x17, 0x3B, 0xED, 0x20, 0x0D};
+
+void rss_shift_key(u8 *pkey, int nkey)
+{
+	int len = nkey;
+	int i;
+	u8 carry = 0;
+
+	for (i = len-1; i >= 0; i--) {
+		if (pkey[i]&0x80) {
+			pkey[i] = (pkey[i] << 1) | carry;
+			carry = 1;
+		} else {
+			pkey[i] = (pkey[i] << 1) | carry;
+			carry = 0;
+		}
+	}
+}
+
+u32 rss_get_most32_key(u8 *pkey)
+{
+	u8 value[4];
+	value[0] = pkey[3];
+	value[1] = pkey[2];
+	value[2] = pkey[1];
+	value[3] = pkey[0];
+	return *(u32 *)value;
+}
+
+u32 rss_cal_hash(struct alx_adapter *adpt, u8 *input, u32 length)
+{
+	u32 index;
+	u32 result = 0;
+	u8 key[40];
+	int j;
+
+	memcpy(key, adpt->hw.rss.key, sizeof(key));
+
+	for  (index = 0; index < length; index++) {
+		for (j = 7; j >= 0; j--) {
+			if (input[index] & (1 << j))
+				result ^= rss_get_most32_key(key);
+
+			rss_shift_key(key, 40);
+		}
+	}
+	return result;
+}
+
+#endif
+
 
 static bool alx_dispatch_rx_irq(struct alx_msix_param *msix,
 				struct alx_rx_queue *rxque)
@@ -563,14 +694,21 @@ static bool alx_dispatch_rx_irq(struct alx_msix_param *msix,
 	u16 next_produce_idx;
 	u16 count = 0;
 
+#if ALX_VALID_RSS
+	u8   buffer[64];
+	u8   buff_len;
+	u32  pkt_hash, pkt_cpu, pkt_flag;
+	bool error = false;
+#endif
+
 	while (1) {
 		if (!alx_get_rrdesc(rxque, &srrd))
 			break;
 
 		if (srrd.rr_gnr.res || srrd.rr_gnr.lene) {
 			alx_clean_rfdesc(rxque, &srrd);
-			DRV_PRINT(RX, WARNING, "wrong packet!"
-				  "rrd->word3 is 0x%08x\n", srrd.rr_dw3);
+			alx_netif_warn(adpt, RX_ERR, "wrong packet!"
+				 "rrd->word3 is 0x%08x\n", srrd.rr_dw3);
 			continue;
 		}
 
@@ -581,11 +719,12 @@ static bool alx_dispatch_rx_irq(struct alx_msix_param *msix,
 					 rfbuf->length, DMA_FROM_DEVICE);
 			rfbuf->dma = 0;
 			skb = rfbuf->skb;
-			DRV_PRINT(RX, INFO, "skb addr = %p, rxbuf_len = %x\n",
-				  skb->data, rfbuf->length);
+			alx_netif_info(adpt, RX_ERR, 
+				       "skb addr = %p, rxbuf_len = %x\n",
+				       skb->data, rfbuf->length);
 		} else {
 			/* TODO */
-			DRV_PRINT(RX, EMERG, "Multil rfd not support yet!\n");
+			alx_err(adpt, "Multil rfd not support yet!\n");
 			break;
 		}
 		alx_clean_rfdesc(rxque, &srrd);
@@ -616,6 +755,101 @@ static bool alx_dispatch_rx_irq(struct alx_msix_param *msix,
 				swque->swq.produce_idx = 0;
 		}
 
+
+#if ALX_VALID_RSS
+		/* start to validate rss */
+		if (skb->protocol == htons(ETH_P_IP)) {
+			struct iphdr *ip_hdr =
+					(struct iphdr *)(((u8 *)eth_hdr(skb)) +
+					sizeof(struct ethhdr));
+			struct tcphdr *tcp_hdr =
+					(struct tcphdr *)((u8 *)ip_hdr +
+					(ip_hdr->ihl * 4));
+			u32 table;
+
+			if (ip_hdr->protocol == IPPROTO_TCP) {
+				*(u32 *)(buffer + 0) = ip_hdr->saddr;
+				*(u32 *)(buffer + 4) = ip_hdr->daddr;
+
+				*(u16 *)(buffer + 8) = tcp_hdr->source;
+				*(u16 *)(buffer + 10) = tcp_hdr->dest;
+				buff_len = 12;
+
+				pkt_hash = rss_cal_hash(adpt, buffer, 12);
+				pkt_flag = 0x1<<2;
+			} else {
+				*(u32 *)(buffer + 0) = ip_hdr->saddr;
+				*(u32 *)(buffer + 4) = ip_hdr->daddr;
+				buff_len = 12;
+
+				pkt_hash = rss_cal_hash(adpt, buffer, 8);
+				pkt_flag = 0x1<<3;
+			}
+			pkt_cpu = pkt_hash & (adpt->hw.rss.idt_size - 1);
+			table = adpt->hw.rss.idt[pkt_cpu / 8];
+			pkt_cpu = (table >> ((pkt_cpu % 8) * 4)) & 0xf;
+		} else {
+			pkt_hash = 0x0;
+			pkt_flag = 0x0;
+			pkt_cpu = 0x0;
+		}
+
+
+		if (pkt_hash != srrd.rr_gnr.hash) {
+			DRV_PRINT(DRV, EMERG, "Hash Value [%08x] is wrong.\n",
+				  srrd.rr_gnr.hash);
+			error = true;
+		}
+
+		if (pkt_flag != srrd.rr_gnr.rss_flag) {
+			DRV_PRINT(DRV, EMERG, "Hash Flag [%02x] is wrong.\n",
+				  srrd.rr_gnr.rss_flag);
+			error = true;
+		}
+
+		if (pkt_cpu != srrd.rr_gnr.rss_cpu) {
+			DRV_PRINT(DRV, EMERG, "Cpu No [%d] is wrong.\n",
+				  srrd.rr_gnr.rss_cpu);
+			error = true;
+		}
+
+		if (error) {
+			u32 *ptr;
+			DRV_PRINT(DRV, INFO, "RRD INFO: "
+				  "%08x : %08x : %08x : %08x\n",
+				  srrd.rr_dw0, srrd.rr_dw1,
+				  srrd.rr_dw2, srrd.rr_dw3);
+			ptr = (u32 *)eth_hdr(skb);
+			DRV_PRINT(DRV, INFO, "PKT INFO : "
+				  "%08x %08x %08x %08x "
+				  "%08x %08x %08x %08x : "
+				  "%08x %08x %08x %08x "
+				  "%08x %08x %08x %08x\n",
+				  ntohl(ptr[0]), ntohl(ptr[1]),
+				  ntohl(ptr[2]), ntohl(ptr[3]),
+				  ntohl(ptr[4]), ntohl(ptr[5]),
+				  ntohl(ptr[6]), ntohl(ptr[7]),
+				  ntohl(ptr[8]), ntohl(ptr[9]),
+				  ntohl(ptr[10]), ntohl(ptr[11]),
+				  ntohl(ptr[12]), ntohl(ptr[13]),
+				  ntohl(ptr[14]), ntohl(ptr[15]));
+			ptr = (u32 *)buffer;
+			DRV_PRINT(DRV, INFO, "HASH BUFF INFO [%d]: "
+				  "%08x %08x%08x %08x\n", buff_len,
+				  ptr[0], ptr[1], ptr[2], ptr[3]);
+
+			DRV_PRINT(DRV, INFO, "RRD: hash = 0x%08x, "
+				  "flag = 0x%02x, cpu = %d\n",
+				  srrd.rr_gnr.hash,
+				  srrd.rr_gnr.rss_flag,
+				  srrd.rr_gnr.rss_cpu);
+			DRV_PRINT(DRV, INFO, "PKT: hash = 0x%08x, "
+				  "flag = 0x%02x, cpu = %d\n",
+				  pkt_hash, pkt_flag, pkt_cpu);
+			error = false;
+		}
+#endif
+
 		count++;
 		if (count == 32)
 			break;
@@ -627,14 +861,23 @@ static bool alx_dispatch_rx_irq(struct alx_msix_param *msix,
 
 
 
+#ifdef CONFIG_ALX_NAPI
 static bool alx_handle_srx_irq(struct alx_msix_param *msix,
 			       struct alx_rx_queue *rxque,
 			       int *num_pkts, int max_pkts)
+#else
+static bool alx_handle_srx_irq(struct alx_msix_param *msix,
+			       struct alx_rx_queue *rxque)
+#endif
 {
 	struct alx_adapter *adpt = msix->adpt;
 	struct net_device *netdev = adpt->netdev;
 	struct alx_sw_buffer *swbuf;
 	bool retval = true;
+#ifndef CONFIG_ALX_NAPI
+	u16 max_pkts = rxque->max_packets, local_num_pkts = 0;
+	u16 *num_pkts = &local_num_pkts;
+#endif
 
 	while (rxque->swq.consume_idx != rxque->swq.produce_idx) {
 		swbuf = GET_SW_BUFFER(rxque, rxque->swq.consume_idx);
@@ -656,9 +899,14 @@ static bool alx_handle_srx_irq(struct alx_msix_param *msix,
 	return retval;
 }
 
+#ifdef CONFIG_ALX_NAPI
 static bool alx_handle_rx_irq(struct alx_msix_param *msix,
 			      struct alx_rx_queue *rxque,
 			      int *num_pkts, int max_pkts)
+#else
+static bool alx_handle_rx_irq(struct alx_msix_param *msix,
+			      struct alx_rx_queue *rxque)
+#endif
 {
 	struct alx_adapter *adpt = msix->adpt;
 	struct pci_dev *pdev = adpt->pdev;
@@ -669,6 +917,10 @@ static bool alx_handle_rx_irq(struct alx_msix_param *msix,
 	struct sk_buff *skb;
 
 	u16 count = 0;
+#ifndef CONFIG_ALX_NAPI
+	u16 max_pkts = rxque->max_packets, local_num_pkts = 0;
+	u16 *num_pkts = &local_num_pkts;
+#endif
 
 	while (1) {
 		if (!alx_get_rrdesc(rxque, &srrd))
@@ -676,8 +928,8 @@ static bool alx_handle_rx_irq(struct alx_msix_param *msix,
 
 		if (srrd.rr_gnr.res || srrd.rr_gnr.lene) {
 			alx_clean_rfdesc(rxque, &srrd);
-			DRV_PRINT(RX, WARNING, "wrong packet!"
-				  "rrd->word3 is 0x%08x\n", srrd.rr_dw3);
+			alx_netif_warn(adpt, RX_ERR, "wrong packet!"
+				 "rrd->word3 is 0x%08x\n", srrd.rr_dw3);
 			continue;
 		}
 
@@ -690,7 +942,7 @@ static bool alx_handle_rx_irq(struct alx_msix_param *msix,
 			skb = rfbuf->skb;
 		} else {
 			/* TODO */
-			DRV_PRINT(RX, EMERG, "Multil rfd not support yet!\n");
+			alx_err(adpt, "Multil rfd not support yet!\n");
 			break;
 		}
 		alx_clean_rfdesc(rxque, &srrd);
@@ -698,7 +950,7 @@ static bool alx_handle_rx_irq(struct alx_msix_param *msix,
 		skb_put(skb, srrd.rr_gnr.pkt_len - ETH_FCS_LEN);
 		skb->protocol = eth_type_trans(skb, netdev);
 		skb->dev = netdev;
-		skb_checksum_none_assert(skb);
+		skb->ip_summed = CHECKSUM_NONE;
 
 		alx_receive_skb(msix, skb, srrd.rr_gnr.vlan_tag,
 				srrd.rr_gnr.vlan_flag);
@@ -727,10 +979,10 @@ static bool alx_handle_tx_irq(struct alx_msix_param *msix,
 	u16 consume_data;
 
 	MEM_R16(hw, txque->consume_reg, &consume_data);
-	DRV_PRINT(TX, INFO, "TX[%d]: consume_reg[0x%x] = 0x%x, "
-		  "tpq.consume_idx = 0x%x.\n",
-		  txque->que_idx, txque->consume_reg, consume_data,
-		  txque->tpq.consume_idx);
+	alx_netif_info(adpt, TX_ERR, "TX[%d]: consume_reg[0x%x] = 0x%x, "
+		       "tpq.consume_idx = 0x%x.\n",
+		       txque->que_idx, txque->consume_reg, consume_data,
+		       txque->tpq.consume_idx);
 
 
 	while (txque->tpq.consume_idx != consume_data) {
@@ -764,7 +1016,7 @@ static irqreturn_t alx_msix_timer(int irq, void *data)
 	struct alx_hw *hw = &adpt->hw;
 	u32 isr;
 
-	DRV_PRINT(FUNC, DEBUG, "ENTER\n");
+	alx_netif_dbg(adpt, DRV, "ENTER\n");
 
 	hw->cbs.disable_msix_intr(hw, msix->vec_idx);
 
@@ -798,7 +1050,7 @@ static irqreturn_t alx_msix_alert(int irq, void *data)
 	struct alx_hw *hw = &adpt->hw;
 	u32 isr;
 
-	DRV_PRINT(FUNC, DEBUG, "ENTER\n");
+	alx_netif_dbg(adpt, DRV, "ENTER\n");
 
 	hw->cbs.disable_msix_intr(hw, msix->vec_idx);
 
@@ -822,7 +1074,7 @@ static irqreturn_t alx_msix_smb(int irq, void *data)
 	struct alx_adapter *adpt = msix->adpt;
 	struct alx_hw *hw = &adpt->hw;
 
-	DRV_PRINT(FUNC, DEBUG, "ENTER\n");
+	alx_netif_dbg(adpt, DRV, "ENTER\n");
 
 	hw->cbs.disable_msix_intr(hw, msix->vec_idx);
 
@@ -837,7 +1089,7 @@ static irqreturn_t alx_msix_phy(int irq, void *data)
 	struct alx_adapter *adpt = msix->adpt;
 	struct alx_hw *hw = &adpt->hw;
 
-	DRV_PRINT(FUNC, DEBUG, "ENTER\n");
+	alx_netif_dbg(adpt, DRV, "ENTER\n");
 
 	hw->cbs.disable_msix_intr(hw, msix->vec_idx);
 
@@ -852,6 +1104,75 @@ static irqreturn_t alx_msix_phy(int irq, void *data)
 	return IRQ_HANDLED;
 }
 
+#ifndef CONFIG_ALX_NAPI
+/*
+ * alx_msix_rtx
+ */
+static irqreturn_t alx_msix_rtx(int irq, void *data)
+{
+	struct alx_msix_param *msix = data;
+	struct alx_adapter  *adpt = msix->adpt;
+	struct alx_hw *hw = &adpt->hw;
+	struct alx_rx_queue  *rxque;
+	struct alx_rx_queue  *swque;
+	struct alx_tx_queue  *txque;
+	unsigned long flags = 0;
+	int rque_idx, tque_idx;
+	bool complete = true;
+	int i, j;
+
+	alx_netif_info(adpt, INTR, "msix vec_idx = %d.\n", msix->vec_idx);
+
+	hw->cbs.disable_msix_intr(hw, msix->vec_idx);
+	if (!msix->tx_count && !msix->rx_count) {
+		hw->cbs.enable_msix_intr(hw, msix->vec_idx);
+		return IRQ_HANDLED;
+	}
+
+	/* Handle RX */
+	for (i = 0; i < msix->rx_count; i++) {
+		rque_idx = msix->rx_map[i];
+		if (CHK_ADPT_FLAG(0, SRSS_EN)) {
+			if (!spin_trylock_irqsave(&adpt->rx_lock, flags)) {
+				printk(KERN_EMERG "rx_lock locked!\n");
+				goto clean_sw_irq;
+			}
+
+			for (j = 0; j < adpt->num_hw_rxques; j++)
+				alx_dispatch_rx_irq(msix, adpt->rx_queue[j]);
+
+			spin_unlock_irqrestore(&adpt->rx_lock, flags);
+clean_sw_irq:
+			swque = adpt->rx_queue[rque_idx];
+			complete &= alx_handle_srx_irq(msix, swque);
+
+		} else {
+			rxque = adpt->rx_queue[rque_idx];
+			complete &= alx_handle_rx_irq(msix, rxque);
+		}
+	}
+
+	/* Handle TX */
+	for (i = 0; i < msix->tx_count; i++) {
+		tque_idx = msix->tx_map[i];
+		txque = adpt->tx_queue[tque_idx];
+		complete &= alx_handle_tx_irq(msix, txque);
+	}
+
+	if (!complete) {
+		alx_netif_info(adpt, INTR, "Some packets in the queue "
+			       "are not handled!\n");
+	}
+
+	/* Enable Interrupt */
+	if (!test_bit(__ALX_DOWN, &adpt->alx_state))
+		hw->cbs.enable_msix_intr(hw, msix->vec_idx);
+
+	return IRQ_HANDLED;
+}
+
+
+#else /* #define CONFIG_ALX_NAPI */
 /*
  * alx_msix_rtx
  */
@@ -861,7 +1182,8 @@ static irqreturn_t alx_msix_rtx(int irq, void *data)
 	struct alx_adapter  *adpt = msix->adpt;
 	struct alx_hw *hw = &adpt->hw;
 
-	DRV_PRINT(INTR, INFO, "msix vec_idx = %d.\n", msix->vec_idx);
+	DRV_PRINT(INTR, INFO, "NAPI: enter alx_msix_phy. vec_idx = %d.\n",
+			msix->vec_idx);
 
 	hw->cbs.disable_msix_intr(hw, msix->vec_idx);
 	if (!msix->rx_count && !msix->tx_count) {
@@ -891,7 +1213,7 @@ static int alx_napi_msix_rtx(struct napi_struct *napi, int max_pkts)
 	int rque_idx, tque_idx;
 	int i, j;
 
-	DRV_PRINT(INTR, INFO, "NAPI: enter alx_napi_msix_rtx.\n");
+	alx_netif_info(adpt, INTR, "NAPI: msix vec_idx = %d\n", msix->vec_idx);
 
 	/* RX */
 	for (i = 0; i < msix->rx_count; i++) {
@@ -926,13 +1248,18 @@ clean_sw_irq:
 	}
 
 	if (!complete) {
-		DRV_PRINT(INTR, INFO, "Some packets in the queue "
-				"are not handled!");
+		alx_netif_info(adpt, INTR,
+			       "Some packets in the queue are not handled!\n");
 		num_pkts = max_pkts;
 	}
 
-	DRV_PRINT(INTR, INFO, "num_pkts = %d, max_pkts = %d.\n",
-			num_pkts, max_pkts);
+#ifndef HAVE_NETDEV_NAPI_LIST
+	if (!netif_running(adpt->netdev))
+		num_pkts = 0;
+#endif
+
+	alx_netif_info(adpt, INTR, "num_pkts = %d, max_pkts = %d\n",
+		       num_pkts, max_pkts);
 	/* If all work done, exit the polling mode */
 	if (num_pkts < max_pkts) {
 		napi_complete(napi);
@@ -943,8 +1270,10 @@ clean_sw_irq:
 	return num_pkts;
 }
 
+#endif /* CONFIG_ALX_NAPI */
 
 
+#ifdef CONFIG_ALX_NAPI
 /*
  * alx_napi_legacy_rtx - NAPI Rx polling callback
  * @adpt: board private structure
@@ -959,7 +1288,7 @@ static int alx_napi_legacy_rtx(struct napi_struct *napi, int max_pkts)
 	int num_pkts = 0;
 	int que_idx;
 
-	DRV_PRINT(INTR, INFO, "NAPI: enter alx_napi_legacy_rtx.\n");
+	alx_netif_info(adpt, INTR, "NAPI: msix vec_idx = %d\n", msix->vec_idx);
 
 	/* Keep link state information with original netdev */
 	if (!netif_carrier_ok(adpt->netdev))
@@ -985,6 +1314,9 @@ enable_rtx_irq:
 	}
 	return num_pkts;
 }
+#endif
+
+
 
 
 static void alx_set_msix_flags(struct alx_msix_param *msix,
@@ -1077,7 +1409,7 @@ static int alx_setup_msix_maps(struct alx_adapter *adpt)
 	if (CHK_ADPT_FLAG(0, FIXED_MSIX))
 		goto fixed_msix_map;
 
-	DRV_PRINT(IF, ERR, "don't support non-fixed msix map\n");
+	alx_err(adpt, "don't support non-fixed msix map\n");
 	return -1;
 
 fixed_msix_map:
@@ -1095,7 +1427,7 @@ fixed_msix_map:
 		}
 	}
 	if (msix_idx != num_msix_rxques)
-		DRV_PRINT(IF, ERR, "msix_idx is wrong.\n");
+		alx_err(adpt, "msix_idx is wrong.\n");
 
 	/*
 	 * For TX queue msix map
@@ -1110,7 +1442,7 @@ fixed_msix_map:
 		}
 	}
 	if (msix_idx != (num_msix_rxques + num_msix_txques))
-		DRV_PRINT(IF, ERR, "msix_idx is wrong.\n");
+		alx_err(adpt, "msix_idx is wrong.\n");
 
 
 	/*
@@ -1198,7 +1530,6 @@ static irqreturn_t alx_interrupt(int irq, void *data)
 {
 	struct net_device *netdev  = data;
 	struct alx_adapter *adpt = netdev_priv(netdev);
-	struct pci_dev *pdev = adpt->pdev;
 	struct alx_hw *hw = &adpt->hw;
 	struct alx_msix_param *msix = adpt->msix[0];
 	int max_intrs = ALX_MAX_HANDLED_INTRS;
@@ -1223,14 +1554,15 @@ static irqreturn_t alx_interrupt(int irq, void *data)
 
 		/* check if PCIE PHY Link down */
 		if (status & ALX_ISR_ERROR) {
-			DRV_PRINT(INTR, ERR, "ISR error (status = 0x%lx).\n",
-					     status & ALX_ISR_ERROR);
+			alx_err(adpt, "isr error (status = 0x%lx).\n",
+				status & ALX_ISR_ERROR);
 			/* reset MAC */
 			SET_ADPT_FLAG(1, RESET_REQUESTED);
 			alx_task_schedule(adpt);
 			return IRQ_HANDLED;
 		}
 
+#ifdef CONFIG_ALX_NAPI
 		if (status & (ALX_ISR_RXQ | ALX_ISR_TXQ)) {
 			if (napi_schedule_prep(&(msix->napi))) {
 				hw->intr_mask &= ~(ALX_ISR_RXQ | ALX_ISR_TXQ);
@@ -1238,11 +1570,27 @@ static irqreturn_t alx_interrupt(int irq, void *data)
 				__napi_schedule(&(msix->napi));
 			}
 		}
+#else
+		if (status & ALX_ISR_RXQ) {
+			int i;
+			for (i = 0; i < adpt->num_hw_rxques; i++)
+				alx_handle_rx_irq(msix, adpt->rx_queue[i]);
+		}
+		if (status & ALX_ISR_TXQ) {
+			if (status & ALX_ISR_TX_Q0)
+				alx_handle_tx_irq(msix, adpt->tx_queue[0]);
+			if (status & ALX_ISR_TX_Q1)
+				alx_handle_tx_irq(msix, adpt->tx_queue[1]);
+			if (status & ALX_ISR_TX_Q2)
+				alx_handle_tx_irq(msix, adpt->tx_queue[2]);
+			if (status & ALX_ISR_TX_Q3)
+				alx_handle_tx_irq(msix, adpt->tx_queue[3]);
+		}
+#endif
 
 		if (status & ALX_ISR_OVER) {
-			dev_err(&pdev->dev,
-					"TX/RX over flow (status = 0x%lx).\n",
-					status & ALX_ISR_OVER);
+			alx_err(adpt, "TX/RX over flow (status = 0x%lx).\n",
+				status & ALX_ISR_OVER);
 		}
 
 		/* link event */
@@ -1308,29 +1656,34 @@ static int alx_request_msix_irq(struct alx_adapter *adpt)
 			handler = &alx_msix_phy;
 			sprintf(msix->name, "%s:%s", netdev->name, "phy");
 		} else {
-			DRV_PRINT(IF, INFO, "The MSIX Entry [%d] is blank.\n",
-					    msix->vec_idx);
+			alx_netif_info(adpt, IFUP, 
+				       "The MSIX Entry [%d] is blank.\n",
+				       msix->vec_idx);
 			continue;
 		}
-		DRV_PRINT(IF, INFO, "the MSIX entry [%d] is %s.\n",
-				    msix->vec_idx, msix->name);
+		alx_netif_info(adpt, IFUP, "the MSIX entry [%d] is %s.\n",
+			       msix->vec_idx, msix->name);
 		retval = request_irq(adpt->msix_entries[msix_idx].vector,
 				     handler, 0, msix->name, msix);
 		if (retval) {
-			DRV_PRINT(IF, ERR, "request_irq failed for MSIX "
-					   "Error: %d\n", retval);
+			alx_err(adpt, "request_irq failed for MSIX "
+				"Error: %d\n", retval);
 			goto free_msix_irq;
 		}
+#ifdef HAVE_IRQ_AFFINITY_HINT
 		/* assign the mask for this irq */
 		irq_set_affinity_hint(adpt->msix_entries[msix_idx].vector,
 				      msix->affinity_mask);
+#endif /* HAVE_IRQ_AFFINITY_HINT */
 	}
 	return retval;
 
 
 free_msix_irq:
 	for (i = 0; i < msix_idx; i++) {
+#ifdef HAVE_IRQ_AFFINITY_HINT
 		irq_set_affinity_hint(adpt->msix_entries[i].vector, NULL);
+#endif
 		free_irq(adpt->msix_entries[i].vector, adpt->msix[i]);
 	}
 	CLI_ADPT_FLAG(0, MSIX_EN);
@@ -1352,8 +1705,8 @@ static int alx_request_irq(struct alx_adapter *adpt)
 	if (CHK_ADPT_FLAG(0, MSIX_EN)) {
 		retval = alx_request_msix_irq(adpt);
 		if (retval)
-			DRV_PRINT(IF, ERR, "request msix irq failed, "
-					"error = %d.\n", retval);
+			alx_err(adpt, "request msix irq failed, "
+				"ERROR = %d\n", retval);
 		goto out;
 	}
 
@@ -1362,8 +1715,8 @@ static int alx_request_irq(struct alx_adapter *adpt)
 		retval = request_irq(adpt->pdev->irq, &alx_interrupt, 0,
 			netdev->name, netdev);
 		if (retval)
-			DRV_PRINT(IF, ERR, "request msix irq failed, "
-					"error = %d.\n", retval);
+			alx_err(adpt, "request msix irq failed, "
+				"error = %d\n", retval);
 		goto out;
 	}
 
@@ -1371,8 +1724,8 @@ static int alx_request_irq(struct alx_adapter *adpt)
 	retval = request_irq(adpt->pdev->irq, &alx_interrupt, IRQF_SHARED,
 			netdev->name, netdev);
 	if (retval)
-		DRV_PRINT(IF, ERR, "request shared irq failed, "
-				"error = %d\n", retval);
+		alx_err(adpt, "request shared irq failed, "
+			"error = %d\n", retval);
 out:
 	return retval;
 }
@@ -1386,13 +1739,15 @@ static void alx_free_irq(struct alx_adapter *adpt)
 	if (CHK_ADPT_FLAG(0, MSIX_EN)) {
 		for (i = 0; i < adpt->num_msix_intrs; i++) {
 			struct alx_msix_param *msix = adpt->msix[i];
-			DRV_PRINT(IF, INFO, "msix entry = %d\n", i);
+			alx_netif_info(adpt, IFDOWN, "msix entry = %d\n", i);
 			if (!CHK_MSIX_FLAG(ALL))
 				continue;
+#ifdef HAVE_IRQ_AFFINITY_HINT
 			if (CHK_MSIX_FLAG(RXS) || CHK_MSIX_FLAG(TXS)) {
 				irq_set_affinity_hint(
 					adpt->msix_entries[i].vector, NULL);
 			}
+#endif
 			free_irq(adpt->msix_entries[i].vector, msix);
 		}
 		alx_reset_msix_maps(adpt);
@@ -1402,11 +1757,14 @@ static void alx_free_irq(struct alx_adapter *adpt)
 }
 
 
+#ifdef NETIF_F_HW_VLAN_TX
 static void alx_vlan_rx_register(struct net_device *netdev,
-				 struct vlan_group *grp)
+				   struct vlan_group *grp)
 {
 	struct alx_adapter *adpt = netdev_priv(netdev);
 	struct alx_hw *hw = &adpt->hw;
+
+	alx_netif_dbg(adpt, DRV, "ENTER\n");
 
 	if (!test_bit(__ALX_DOWN, &adpt->alx_state))
 		alx_disable_intr(adpt);
@@ -1429,10 +1787,12 @@ static void alx_restore_vlan(struct alx_adapter *adpt)
 {
 	alx_vlan_rx_register(adpt->netdev, adpt->vlgrp);
 }
+#endif
 
 
 static void alx_napi_enable_all(struct alx_adapter *adpt)
 {
+#ifdef CONFIG_ALX_NAPI
 	struct alx_msix_param *msix;
 	int num_msix_intrs = adpt->num_msix_intrs;
 	int msix_idx;
@@ -1446,10 +1806,12 @@ static void alx_napi_enable_all(struct alx_adapter *adpt)
 		napi = &msix->napi;
 		napi_enable(napi);
 	}
+#endif /* CONFIG_alx_NAPI */
 }
 
 static void alx_napi_disable_all(struct alx_adapter *adpt)
 {
+#ifdef CONFIG_ALX_NAPI
 	struct alx_msix_param *msix;
 	int num_msix_intrs = adpt->num_msix_intrs;
 	int msix_idx;
@@ -1461,6 +1823,7 @@ static void alx_napi_disable_all(struct alx_adapter *adpt)
 		msix = adpt->msix[msix_idx];
 		napi_disable(&msix->napi);
 	}
+#endif
 }
 
 
@@ -1652,7 +2015,7 @@ static int alx_alloc_all_rtx_queue(struct alx_adapter *adpt)
 			goto err_alloc_tx_queue;
 		txque->tpq.count = adpt->num_txdescs;
 		txque->que_idx = que_idx;
-		txque->dev = &adpt->pdev->dev;
+		txque->dev = pci_dev_to_dev(adpt->pdev);
 		txque->netdev = adpt->netdev;
 
 		adpt->tx_queue[que_idx] = txque;
@@ -1668,7 +2031,7 @@ static int alx_alloc_all_rtx_queue(struct alx_adapter *adpt)
 		rxque->rfq.count = adpt->num_rxdescs;
 		rxque->swq.count = adpt->num_rxdescs;
 		rxque->que_idx = que_idx;
-		rxque->dev = &adpt->pdev->dev;
+		rxque->dev = pci_dev_to_dev(adpt->pdev);
 		rxque->netdev = adpt->netdev;
 
 		if (CHK_ADPT_FLAG(0, SRSS_EN)) {
@@ -1681,16 +2044,16 @@ static int alx_alloc_all_rtx_queue(struct alx_adapter *adpt)
 		}
 		adpt->rx_queue[que_idx] = rxque;
 	}
-	DRV_PRINT(INIT, DEBUG, "num_tx_descs = %d, num_rx_descs = %d\n",
+	alx_netif_dbg(adpt, PROBE, "num_tx_descs = %d, num_rx_descs = %d\n",
 			adpt->num_txdescs, adpt->num_rxdescs);
 	return 0;
 
 err_alloc_rx_queue:
-	DRV_PRINT(INIT, ERR, "goto err_alloc_rx_queue");
+	alx_err(adpt, "goto err_alloc_rx_queue");
 	for (que_idx = 0; que_idx < adpt->num_rxques; que_idx++)
 		kfree(adpt->rx_queue[que_idx]);
 err_alloc_tx_queue:
-	DRV_PRINT(INIT, ERR, "goto err_alloc_tx_queue");
+	alx_err(adpt, "goto err_alloc_tx_queue");
 	for (que_idx = 0; que_idx < adpt->num_txques; que_idx++)
 		kfree(adpt->tx_queue[que_idx]);
 	return -ENOMEM;
@@ -1716,14 +2079,20 @@ static void alx_free_all_rtx_queue(struct alx_adapter *adpt)
 static int alx_set_interrupt_param(struct alx_adapter *adpt)
 {
 	struct alx_msix_param *msix;
+#ifdef CONFIG_ALX_NAPI
 	int (*poll)(struct napi_struct *, int);
+#endif
 	int msix_idx;
 
 	if (CHK_ADPT_FLAG(0, MSIX_EN)) {
+#ifdef CONFIG_ALX_NAPI
 		poll = &alx_napi_msix_rtx;
+#endif
 	} else {
 		adpt->num_msix_intrs = 1;
+#ifdef CONFIG_ALX_NAPI
 		poll = &alx_napi_legacy_rtx;
+#endif
 	}
 
 	for (msix_idx = 0; msix_idx < adpt->num_msix_intrs; msix_idx++) {
@@ -1733,30 +2102,40 @@ static int alx_set_interrupt_param(struct alx_adapter *adpt)
 			goto err_alloc_msix;
 		msix->adpt = adpt;
 		msix->vec_idx = msix_idx;
+#ifdef HAVE_IRQ_AFFINITY_HINT
 		/* Allocate the affinity_hint cpumask, configure the mask */
 		if (!alloc_cpumask_var(&msix->affinity_mask, GFP_KERNEL))
 			goto err_alloc_cpumask;
 
 		cpumask_set_cpu((msix_idx % num_online_cpus()),
 				msix->affinity_mask);
+#endif
 
+#ifdef CONFIG_ALX_NAPI
 		netif_napi_add(adpt->netdev, &msix->napi, (*poll), 64);
+#endif
 		adpt->msix[msix_idx] = msix;
 	}
 	return 0;
 
+#ifdef HAVE_IRQ_AFFINITY_HINT
 err_alloc_cpumask:
 	kfree(msix);
 	adpt->msix[msix_idx] = NULL;
+#endif
 err_alloc_msix:
 	for (msix_idx--; msix_idx >= 0; msix_idx--) {
 		msix = adpt->msix[msix_idx];
+#ifdef CONFIG_ALX_NAPI
 		netif_napi_del(&msix->napi);
+#endif
+#ifdef HAVE_IRQ_AFFINITY_HINT
 		free_cpumask_var(msix->affinity_mask);
+#endif
 		kfree(msix);
 		adpt->msix[msix_idx] = NULL;
 	}
-	DRV_PRINT(INTR, ERR, "can't allocate memory.\n");
+	alx_err(adpt, "can't allocate memory.\n");
 	return -ENOMEM;
 }
 
@@ -1770,8 +2149,12 @@ static void alx_reset_interrupt_param(struct alx_adapter *adpt)
 
 	for (msix_idx = 0; msix_idx < adpt->num_msix_intrs; msix_idx++) {
 		struct alx_msix_param *msix = adpt->msix[msix_idx];
+#ifdef CONFIG_ALX_NAPI
 		netif_napi_del(&msix->napi);
+#endif
+#ifdef HAVE_IRQ_AFFINITY_HINT
 		free_cpumask_var(msix->affinity_mask);
+#endif
 		kfree(msix);
 		adpt->msix[msix_idx] = NULL;
 	}
@@ -1786,7 +2169,7 @@ static int alx_set_msix_interrupt_mode(struct alx_adapter *adpt)
 	adpt->msix_entries = kcalloc(adpt->max_msix_intrs,
 				sizeof(struct msix_entry), GFP_KERNEL);
 	if (!adpt->msix_entries) {
-		DRV_PRINT(INTR, ERR, "can't allocate msix entry.\n");
+		alx_err(adpt, "can't allocate msix entry.\n");
 		retval = -1;
 		goto try_msi_mode;
 	}
@@ -1807,15 +2190,16 @@ static int alx_set_msix_interrupt_mode(struct alx_adapter *adpt)
 			msix_intrs = retval;
 	}
 	if (msix_intrs < adpt->min_msix_intrs) {
-		DRV_PRINT(INTR, INFO, "can't enable MSI-X interrupts\n");
+		alx_netif_info(adpt, PROBE, "can't enable MSI-X interrupts\n");
 		CLI_ADPT_FLAG(0, MSIX_EN);
 		kfree(adpt->msix_entries);
 		adpt->msix_entries = NULL;
 		goto try_msi_mode;
 	}
 
-	DRV_PRINT(INTR, INFO, "enable MSI-X interrupts, num_msix_intrs = %d\n",
-			msix_intrs);
+	alx_netif_info(adpt, PROBE, 
+		       "enable MSI-X interrupts, num_msix_intrs = %d\n",
+		       msix_intrs);
 	SET_ADPT_FLAG(0, MSIX_EN);
 	if (CHK_ADPT_FLAG(0, SRSS_CAP))
 		SET_ADPT_FLAG(0, SRSS_EN);
@@ -1839,8 +2223,8 @@ static int alx_set_msi_interrupt_mode(struct alx_adapter *adpt)
 
 	retval = pci_enable_msi(adpt->pdev);
 	if (retval) {
-		DRV_PRINT(INTR, INFO, "can't enable MSI interrupt. "
-				"retval: %d\n", retval);
+		alx_err(adpt, "can't enable MSI interrupt. "
+			"retval: %d\n", retval);
 		return retval;
 	}
 	SET_ADPT_FLAG(0, MSI_EN);
@@ -1853,21 +2237,21 @@ static int alx_set_interrupt_mode(struct alx_adapter *adpt)
 	int retval = 0;
 
 	if (CHK_ADPT_FLAG(0, MSIX_CAP)) {
-		DRV_PRINT(INTR, INFO, "Try to set MSIX interrupt.\n");
+		alx_netif_info(adpt, PROBE, "Try to set MSIX interrupt.\n");
 		retval = alx_set_msix_interrupt_mode(adpt);
 		if (!retval)
 			return retval;
 	}
 
 	if (CHK_ADPT_FLAG(0, MSI_CAP)) {
-		DRV_PRINT(INTR, INFO, "Try to set MSI interrupt.\n");
+		alx_netif_info(adpt, PROBE, "Try to set MSI interrupt.\n");
 		retval = alx_set_msi_interrupt_mode(adpt);
 		if (!retval)
 			return retval;
 	}
 
-	DRV_PRINT(INTR, INFO, "can't enable MSIX and MSI interrupt. "
-			"And enable Legacy interrupt.\n");
+	alx_netif_info(adpt, PROBE, "can't enable MSIX and MSI interrupt. "
+		 "And enable Legacy interrupt.\n");
 	retval = 0;
 	return retval;
 }
@@ -1891,6 +2275,7 @@ static int __devinit alx_init_adapter_special(struct alx_adapter *adpt)
 {
 	switch (adpt->hw.mac_type) {
 	case alx_mac_l1f:
+	case alx_mac_l2f:
 		goto init_alf_adapter;
 		break;
 	case alx_mac_l1c:
@@ -1909,7 +2294,7 @@ static int __devinit alx_init_adapter_special(struct alx_adapter *adpt)
 
 init_alc_adapter:
 	if (CHK_ADPT_FLAG(0, MSIX_CAP))
-		DRV_PRINT(INIT, ERR, "ALC doesn't support MSIX.\n");
+		alx_err(adpt, "ALC doesn't support MSIX.\n");
 
 	/* msi for tx, rx and none queues */
 	adpt->num_msix_txques = 0;
@@ -1957,18 +2342,19 @@ static int __devinit alx_init_adapter(struct alx_adapter *adpt)
 
 
 	if (alx_init_hw_callbacks(adpt) != 0) {
-		DRV_PRINT(INIT, ERR, "set hw function pointers failed\n");
+		alx_err(adpt, "set HW function pointers failed\n");
 		return -1;
 	}
 
 	if (hw->cbs.identify_nic(hw) != 0) {
-		DRV_PRINT(INIT, ERR, "hw is disabled\n");
+		alx_err(adpt, "HW is disabled\n");
 		return -1;
 	}
 
 	/* Set adapter flags */
 	switch (hw->mac_type) {
 	case alx_mac_l1f:
+	case alx_mac_l2f:
 #ifdef CONFIG_ALX_MSI
 		SET_ADPT_FLAG(0, MSI_CAP);
 #endif
@@ -1982,7 +2368,7 @@ static int __devinit alx_init_adapter(struct alx_adapter *adpt)
 			SET_ADPT_FLAG(0, SRSS_CAP);
 #endif
 		}
-		pdev->dev_flags |= PCI_DEV_FLAGS_MSI_INTX_DISABLE_BUG;
+		SET_PCI_DEV_FLAG(PCI_DEV_FLAGS_MSI_INTX_DISABLE_BUG);
 		break;
 	case alx_mac_l1c:
 	case alx_mac_l1d_v1:
@@ -2059,6 +2445,7 @@ static int  alx_set_register_info_special(struct alx_adapter *adpt)
 
 	switch (adpt->hw.mac_type) {
 	case alx_mac_l1f:
+	case alx_mac_l2f:
 		goto cache_alf_register;
 		break;
 	case alx_mac_l1c:
@@ -2121,17 +2508,22 @@ static int alx_alloc_tx_descriptor(struct alx_adapter *adpt,
 	struct alx_ring_header *ring_header = &adpt->ring_header;
 	int size;
 
-	DRV_PRINT(IF, INFO, "tpq.count = %d\n", txque->tpq.count);
+	alx_netif_info(adpt, IFUP, "tpq.count = %d\n", txque->tpq.count);
 
 	size = sizeof(struct alx_buffer) * txque->tpq.count;
 	txque->tpq.tpbuff = kzalloc(size, GFP_KERNEL);
 	if (!txque->tpq.tpbuff)
 		goto err_alloc_tpq_buffer;
-	memset(txque->tpq.tpbuff, 0, size);
 
 	/* round up to nearest 4K */
 	txque->tpq.size = txque->tpq.count * sizeof(struct alx_tpdesc);
 
+	/*
+	txque->tpq.tpdesc = dma_alloc_coherent(dev, txque->tpq.size,
+			&txque->dma, GFP_KERNEL);
+	if (!txque->tpq.tpdesc)
+		goto error;
+	*/
 	txque->tpq.tpdma = ring_header->dma + ring_header->used;
 	txque->tpq.tpdesc = ring_header->desc + ring_header->used;
 	adpt->hw.tpdma[txque->que_idx] = (u64)txque->tpq.tpdma;
@@ -2143,9 +2535,7 @@ static int alx_alloc_tx_descriptor(struct alx_adapter *adpt,
 	return 0;
 
 err_alloc_tpq_buffer:
-	kfree(txque->tpq.tpbuff);
-	txque->tpq.tpbuff = NULL;
-	DRV_PRINT(IF, ERR, "Unable to allocate memory "
+	alx_err(adpt, "Unable to allocate memory "
 		"for the Tx descriptor.\n");
 	return -ENOMEM;
 }
@@ -2154,14 +2544,14 @@ err_alloc_tpq_buffer:
 static int alx_alloc_all_tx_descriptor(struct alx_adapter *adpt)
 {
 	int i, retval = 0;
-	DRV_PRINT(IF, INFO, "num_tques = %d\n", adpt->num_txques);
+	alx_netif_info(adpt, IFUP, "num_tques = %d\n", adpt->num_txques);
 
 	for (i = 0; i < adpt->num_txques; i++) {
 		retval = alx_alloc_tx_descriptor(adpt, adpt->tx_queue[i]);
 		if (!retval)
 			continue;
 
-		DRV_PRINT(IF, ERR, "Allocation for Tx Queue %u failed\n", i);
+		alx_err(adpt, "Allocation for Tx Queue %u failed\n", i);
 		break;
 	}
 
@@ -2175,11 +2565,9 @@ static int alx_alloc_rx_descriptor(struct alx_adapter *adpt,
 	struct alx_ring_header *ring_header = &adpt->ring_header;
 	int size;
 
-	DRV_PRINT(IF, INFO, "RRD.count = %d, RFD.count = %d, "
-			"SWD.count = %d.\n",
-			rxque->rrq.count,
-			rxque->rfq.count,
-			rxque->swq.count);
+	alx_netif_info(adpt, IFUP, "RRD.count = %d, RFD.count = %d, "
+		       "SWD.count = %d.\n",
+		       rxque->rrq.count, rxque->rfq.count, rxque->swq.count);
 
 	if (CHK_RX_FLAG(HW_QUE)) {
 		/* alloc buffer info */
@@ -2187,8 +2575,6 @@ static int alx_alloc_rx_descriptor(struct alx_adapter *adpt,
 		rxque->rfq.rfbuff = kzalloc(size, GFP_KERNEL);
 		if (!rxque->rfq.rfbuff)
 			goto err_alloc_rfq_buffer;
-		memset(rxque->rfq.rfbuff, 0, size);
-
 		/*
 		 * set dma's point of rrq and rfq
 		 */
@@ -2199,6 +2585,13 @@ static int alx_alloc_rx_descriptor(struct alx_adapter *adpt,
 		rxque->rfq.size =
 			rxque->rfq.count * sizeof(struct alx_rfdesc);
 
+		/*
+		desc = dma_alloc_coherent(dev,
+				rxque->rrq.size + rxque->rfq.size + 16,
+				&dma, GFP_KERNEL);
+		if (!desc)
+			goto error;
+		*/
 		rxque->rrq.rrdma = ring_header->dma + ring_header->used;
 		rxque->rrq.rrdesc = ring_header->desc + ring_header->used;
 		adpt->hw.rrdma[rxque->que_idx] = (u64)rxque->rrq.rrdma;
@@ -2222,22 +2615,21 @@ static int alx_alloc_rx_descriptor(struct alx_adapter *adpt,
 		rxque->swq.swbuff = kzalloc(size, GFP_KERNEL);
 		if (!rxque->swq.swbuff)
 			goto err_alloc_swq_buffer;
-		memset(rxque->swq.swbuff, 0, size);
 
 		rxque->swq.consume_idx = 0;
 		rxque->swq.produce_idx = 0;
 	}
 
+#ifndef CONFIG_ALX_NAPI
 	rxque->max_packets = rxque->rrq.count / 2;
+#endif
 	return 0;
 
 err_alloc_swq_buffer:
-	kfree(rxque->swq.swbuff);
-	rxque->swq.swbuff = NULL;
-err_alloc_rfq_buffer:
 	kfree(rxque->rfq.rfbuff);
 	rxque->rfq.rfbuff = NULL;
-	DRV_PRINT(IF, ERR, "Unable to allocate memory "
+err_alloc_rfq_buffer:
+	alx_err(adpt, "Unable to allocate memory "
 		"for the Rx descriptor\n");
 	return -ENOMEM;
 }
@@ -2251,7 +2643,7 @@ static int alx_alloc_all_rx_descriptor(struct alx_adapter *adpt)
 		error = alx_alloc_rx_descriptor(adpt, adpt->rx_queue[i]);
 		if (!error)
 			continue;
-		DRV_PRINT(IF, ERR, "Allocation for Rx Queue %u failed\n", i);
+		alx_err(adpt, "Allocation for Rx Queue %u failed\n", i);
 		break;
 	}
 
@@ -2269,6 +2661,11 @@ static void alx_free_tx_descriptor(struct alx_tx_queue *txque)
 	/* if not set, then don't free */
 	if (!txque->tpq.tpdesc)
 		return;
+
+	/*
+	dma_free_coherent(txque->dev, txque->tpq.size,
+			  txque->tpq.tpdesc, txque->tpq.tpdma);
+	*/
 	txque->tpq.tpdesc = NULL;
 }
 
@@ -2293,10 +2690,18 @@ static void alx_free_rx_descriptor(struct alx_rx_queue *rxque)
 		/* if not set, then don't free */
 		if (!rxque->rrq.rrdesc)
 			return;
+		/*
+		dma_free_coherent(rxque->dev, rxque->rrq.size,
+				  rxque->rrq.rrdesc, rxque->rrq.rrdma);
+		*/
 		rxque->rrq.rrdesc = NULL;
 
 		if (!rxque->rfq.rfdesc)
 			return;
+		/*
+		dma_free_coherent(rxque->dev, rxque->rfq.size,
+				  rxque->rfq.rfdesc, rxque->rfq.rfdma);
+		*/
 		rxque->rfq.rfdesc = NULL;
 	}
 
@@ -2340,25 +2745,25 @@ static int alx_alloc_all_rtx_descriptor(struct alx_adapter *adpt)
 		sizeof(struct coals_msg_block) +
 		sizeof(struct alx_hw_stats) +
 		num_tques * 8 + num_rques * 2 * 8 + 8 * 2;
-	DRV_PRINT(IF, INFO, "num_tques = %d, num_tx_descs = %d.\n",
-			num_tques, num_tx_descs);
-	DRV_PRINT(IF, INFO, "num_rques = %d, num_rx_descs = %d.\n",
-			num_rques, num_rx_descs);
+	alx_netif_info(adpt, IFUP, "num_tques = %d, num_tx_descs = %d.\n",
+		       num_tques, num_tx_descs);
+	alx_netif_info(adpt, IFUP, "num_rques = %d, num_rx_descs = %d.\n",
+		       num_rques, num_rx_descs);
 
 	ring_header->used = 0;
-	ring_header->desc = pci_alloc_consistent(pdev, ring_header->size,
-				&ring_header->dma);
+	ring_header->desc = dma_alloc_coherent(&pdev->dev, ring_header->size,
+				&ring_header->dma, GFP_KERNEL);
 
 	if (!ring_header->desc) {
-		DRV_PRINT(IF, ERR, "pci_alloc_consistend failed\n");
+		alx_err(adpt, "dma_alloc_coherent failed\n");
 		retval = -ENOMEM;
 		goto err_alloc_dma;
 	}
 	memset(ring_header->desc, 0, ring_header->size);
 	ring_header->used = ALIGN(ring_header->dma, 8) - ring_header->dma;
 
-	DRV_PRINT(IF, INFO, "Ring Header: size = %d, used= %d.\n",
-		ring_header->size, ring_header->used);
+	alx_netif_info(adpt, IFUP, "Ring Header: size = %d, used= %d.\n",
+		       ring_header->size, ring_header->used);
 
 	/* allocate receive descriptors */
 	retval = alx_alloc_all_tx_descriptor(adpt);
@@ -2424,30 +2829,37 @@ static int alx_change_mtu(struct net_device *netdev, int new_mtu)
 	struct alx_adapter *adpt = netdev_priv(netdev);
 	int old_mtu   = netdev->mtu;
 	int max_frame = new_mtu + ETH_HLEN + ETH_FCS_LEN + VLAN_HLEN;
-	struct pci_dev *pdev = adpt->pdev;
 
-	DRV_PRINT(FUNC, DEBUG, "ENTER\n");
+	alx_netif_dbg(adpt, DRV, "ENTER\n");
 
 	if ((max_frame < ALX_MIN_ETH_FRAME_SIZE) ||
 	    (max_frame > ALX_MAX_ETH_FRAME_SIZE)) {
-		dev_warn(&pdev->dev, "invalid MTU setting\n");
+		alx_err(adpt, "invalid MTU setting\n");
 		return -EINVAL;
 	}
 	/* set MTU */
 	if (old_mtu != new_mtu && netif_running(netdev)) {
 
-		DRV_PRINT(IF, INFO, "changing MTU from %d to %d\n",
-				netdev->mtu, new_mtu);
+		alx_netif_info(adpt, HW, "changing MTU from %d to %d\n",
+			       netdev->mtu, new_mtu);
 		netdev->mtu = new_mtu;
 		adpt->hw.mtu = new_mtu;
 		adpt->rxbuf_size = new_mtu > ALX_DEF_RX_BUF_SIZE ?
 			ALIGN(max_frame, 8) : ALX_DEF_RX_BUF_SIZE;
 		if (new_mtu > ALX_MAX_TSO_PKT_SIZE) {
+#ifdef NETIF_F_TSO
 			adpt->netdev->features &= ~NETIF_F_TSO;
+#endif
+#ifdef NETIF_F_TSO6
 			adpt->netdev->features &= ~NETIF_F_TSO6;
+#endif
 		} else {
+#ifdef NETIF_F_TSO
 			adpt->netdev->features |= NETIF_F_TSO;
+#endif
+#ifdef NETIF_F_TSO6
 			adpt->netdev->features |= NETIF_F_TSO6;
+#endif
 		}
 
 		alx_reinit_locked(adpt);
@@ -2466,7 +2878,9 @@ int alx_open_internal(struct alx_adapter *adpt, u32 ctrl)
 	alx_init_ring_ptrs(adpt);
 
 	alx_set_multicase_list(adpt->netdev);
+#ifdef NETIF_F_HW_VLAN_TX
 	alx_restore_vlan(adpt);
+#endif
 
 	if (hw->cbs.start_mac)
 		retval = hw->cbs.start_mac(hw);
@@ -2567,7 +2981,7 @@ static int alx_open(struct net_device *netdev)
 	struct alx_hw *hw = &adpt->hw;
 	int retval;
 
-	DRV_PRINT(FUNC, DEBUG, "ENTER\n");
+	alx_netif_dbg(adpt, DRV, "ENTER\n");
 
 	/* disallow open during test */
 	if (test_bit(__ALX_TESTING, &adpt->alx_state))
@@ -2578,7 +2992,7 @@ static int alx_open(struct net_device *netdev)
 	/* allocate rx/tx dma buffer & descriptors */
 	retval = alx_alloc_all_rtx_descriptor(adpt);
 	if (retval) {
-		DRV_PRINT(IF, ERR, "error in alx_alloc_all_rtx_descriptor.\n");
+		alx_err(adpt, "error in alx_alloc_all_rtx_descriptor.\n");
 		goto err_alloc_rtx;
 	}
 
@@ -2604,7 +3018,7 @@ static int alx_stop(struct net_device *netdev)
 {
 	struct alx_adapter *adpt = netdev_priv(netdev);
 
-	DRV_PRINT(FUNC, DEBUG, "ENTER\n");
+	alx_netif_dbg(adpt, DRV, "ENTER\n");
 
 	WARN_ON(test_bit(__ALX_RESETTING, &adpt->alx_state));
 	alx_stop_internal(adpt, (ALX_OPEN_CTRL_IRQ_EN |
@@ -2633,6 +3047,15 @@ int alx_resume(struct pci_dev *pdev)
 	pci_enable_wake(pdev, PCI_D3hot, 0);
 	pci_enable_wake(pdev, PCI_D3cold, 0);
 
+#if 0
+	retval = alx_init_intr_scheme(adpt);
+	if (retval) {
+		printk(KERN_ERR "alx: Cannot initialize interrupts for "
+		       "device\n");
+		return retval;
+	}
+#endif
+
 	retval = hw->cbs.reset_pcie(hw, true, true);
 	retval = hw->cbs.reset_phy(hw);
 	retval = hw->cbs.reset_mac(hw);
@@ -2657,6 +3080,7 @@ int alx_resume(struct pci_dev *pdev)
  * is disabled on older kernels (<2.6.12). causes a compile
  * warning/error, because it is defined and not used.
  */
+#if defined(CONFIG_PM) || !defined(USE_REBOOT_NOTIFIER)
 int alx_shutdown_internal(struct pci_dev *pdev, pm_message_t state)
 {
 	struct alx_adapter *adpt = pci_get_drvdata(pdev);
@@ -2688,7 +3112,8 @@ int alx_shutdown_internal(struct pci_dev *pdev, pm_message_t state)
 	hw->cbs.check_phy_link(hw, &speed, &link_up);
 
 	if (link_up) {
-		if (hw->mac_type == alx_mac_l1f) {
+		if (hw->mac_type == alx_mac_l1f ||
+		    hw->mac_type == alx_mac_l2f) {
 			MEM_R32(hw, ALX_MISC, &misc);
 			misc |= ALX_MISC_INTNLOSC_OPEN;
 			MEM_W32(hw, ALX_MISC, misc);
@@ -2740,7 +3165,7 @@ int alx_shutdown_internal(struct pci_dev *pdev, pm_message_t state)
 
 	if (wufc) {
 		/* pcie patch */
-		device_set_wakeup_enable(&pdev->dev, 1);
+		device_set_wakeup_enable(pci_dev_to_dev(pdev), 1);
 	}
 
 	retval = hw->cbs.config_pow_save(hw, adpt->hw.link_speed,
@@ -2754,6 +3179,7 @@ int alx_shutdown_internal(struct pci_dev *pdev, pm_message_t state)
 
 	return 0;
 }
+#endif
 
 #ifdef CONFIG_PM
 int alx_suspend(struct pci_dev *pdev, pm_message_t state)
@@ -2768,10 +3194,12 @@ int alx_suspend(struct pci_dev *pdev, pm_message_t state)
 }
 #endif
 
+#ifndef USE_REBOOT_NOTIFIER
 void alx_shutdown(struct pci_dev *pdev)
 {
 	alx_shutdown_internal(pdev, PMSG_SUSPEND);
 }
+#endif
 
 
 /**
@@ -2852,7 +3280,7 @@ static struct net_device_stats *alx_get_hw_stats(struct net_device *netdev)
 {
 	struct alx_adapter *adpt = netdev_priv(netdev);
 
-	DRV_PRINT(FUNC, DEBUG, "ENTER\n");
+	alx_netif_dbg(adpt, DRV, "ENTER\n");
 
 	alx_update_hw_stats(adpt);
 	return GET_NETDEV_STATS(adpt);
@@ -2889,8 +3317,8 @@ static void alx_link_task_routine(struct alx_adapter *adpt)
 		hw->link_speed = ALX_LINK_SPEED_1GB_FULL;
 		hw->link_up = true;
 	}
-	DRV_PRINT(TIMER, INFO, "link_speed = %d, link_up = %d\n",
-		  hw->link_speed, hw->link_up);
+	alx_netif_info(adpt, TIMER, "link_speed = %d, link_up = %d\n",
+		       hw->link_speed, hw->link_up);
 
 	if (!hw->link_up && time_after(adpt->link_jiffies, jiffies))
 		SET_ADPT_FLAG(1, LSC_REQUESTED);
@@ -2910,7 +3338,7 @@ static void alx_link_task_routine(struct alx_adapter *adpt)
 			   (hw->link_speed == ALX_LINK_SPEED_10_HALF ?
 			    "10 Mbps Duplex HALF" :
 			    "unknown speed"))));
-		DRV_PRINT(TIMER, INFO, "NIC Link is Up %s\n", link_desc);
+		alx_netif_info(adpt, TIMER, "NIC Link is Up %s\n", link_desc);
 
 		hw->cbs.config_aspm(hw, true, true);
 		hw->cbs.start_mac(hw);
@@ -2922,7 +3350,7 @@ static void alx_link_task_routine(struct alx_adapter *adpt)
 			return;
 
 		hw->link_speed = 0;
-		DRV_PRINT(TIMER, INFO, "NIC Link is Down\n");
+		alx_netif_info(adpt, TIMER, "NIC Link is Down\n");
 		netif_carrier_off(netdev);
 		netif_tx_stop_all_queues(netdev);
 
@@ -3005,14 +3433,18 @@ static bool alx_check_num_tpdescs(struct alx_tx_queue *txque,
 	u16 consume_idx = txque->tpq.consume_idx;
 	int i = 0;
 
+#ifdef NETIF_F_TSO
 	u16 proto_hdr_len = 0;
 	if (skb_is_gso(skb)) {
 		proto_hdr_len = skb_transport_offset(skb) + tcp_hdrlen(skb);
 		if (proto_hdr_len < skb_headlen(skb))
 			num_required++;
+#ifdef NETIF_F_TSO6
 		if (skb_shinfo(skb)->gso_type & SKB_GSO_TCPV6)
 			num_required++;
+#endif
 	}
+#endif
 	for (i = 0; i < skb_shinfo(skb)->nr_frags; i++)
 		num_required++;
 	num_available = (u16)(consume_idx > produce_idx) ?
@@ -3023,14 +3455,125 @@ static bool alx_check_num_tpdescs(struct alx_tx_queue *txque,
 }
 
 
+#if 0
+static int alx_do_tso(struct alx_adapter *adpt,
+			 struct alx_tx_queue *txque,
+			 struct sk_buff *skb,
+			 struct alx_tpdesc *stpd)
+{
+#ifdef NETIF_F_TSO
+	struct iphdr *iph;
+	u8           hdr_len;
+	//u32          real_len;
+	int          error;
+
+	if (!skb_is_gso(skb))
+		return 0;
+#else
+	return 0;
+#endif /* NETIF_F_TSO */
+
+
+
+#ifdef NETIF_F_TSO
+	if (skb_header_cloned(skb)) {
+		error = pskb_expand_head(skb, 0, 0, GFP_ATOMIC);
+		if (unlikely(error))
+			return error;
+	}
+
+	if (skb->protocol == htons(ETH_P_IP)) {
+		iph = ip_hdr(skb);
+		//real_len = (((unsigned char *)ip_hdr(skb) - skb->data)
+		//	   + ntohs(ip_hdr(skb)->tot_len));
+		//if (real_len < skb->len)
+		//	pskb_trim(skb, real_len);
+
+		hdr_len = skb_transport_offset(skb) + tcp_hdrlen(skb);
+		if (unlikely(skb->len == hdr_len)) {
+			/* only xsum need */
+			alx_netif_warn(adpt, TX_ERR,
+				       "IPV4 tso with zero data?\n");
+			return 0;
+		} 
+
+		iph->check = 0;
+		tcp_hdr(skb)->check = ~csum_tcpudp_magic(
+					iph->saddr,
+					iph->daddr,
+					0, IPPROTO_TCP, 0);
+		stpd->tp_gnr.ipv4 = 1;
+#ifdef NETIF_F_TSO6
+	} else if (skb_shinfo(skb)->gso_type & SKB_GSO_TCPV6) {
+		struct alx_tpdesc etpd;
+		memset(&etpd, 0, sizeof(struct alx_tpdesc));
+		memset(stpd, 0, sizeof(struct alx_tpdesc));
+
+		ipv6_hdr(skb)->payload_len = 0;
+
+		hdr_len = skb_transport_offset(skb) + tcp_hdrlen(skb);
+		if (unlikely(skb->len == hdr_len)) {
+			/* only xsum need */
+			alx_netif_warn(adpt, TX_ERR,
+				       "IPV4 tso with zero data?\n");
+			return 0;
+		}
+		tcp_hdr(skb)->check = ~csum_ipv6_magic(
+					&ipv6_hdr(skb)->saddr,
+					&ipv6_hdr(skb)->daddr,
+					0, IPPROTO_TCP, 0);
+		etpd.tp_tso.addr_lo = skb->len;
+		etpd.tp_tso.lso = 0x1;
+		etpd.tp_tso.lso_v2 = 0x1;
+		stpd->tp_tso.lso_v2 = 0x1;
+		alx_set_tpdesc(txque, &etpd);
+	}
+#else
+	}
+#endif
+
+	stpd->tp_tso.lso = 0x1;
+	stpd->tp_tso.tcphdr_offset = skb_transport_offset(skb);
+	stpd->tp_tso.mss = skb_shinfo(skb)->gso_size;
+	return 1;
+#endif
+}
+
+static int alx_do_checksum(struct alx_adapter *adpt, struct sk_buff *skb, 
+			   struct alx_tpdesc *stpd)
+{
+
+	if (likely(skb->ip_summed == CHECKSUM_PARTIAL)) {
+		u8 css, cso;
+		cso = skb_transport_offset(skb);
+
+		if (unlikely(cso & 0x1)) {
+			alx_err(adpt, "pay load offset should not ant event "
+				"number\n");
+			return -EINVAL;
+		}
+		
+		css = cso + skb->csum_offset;
+		stpd->tp_sum.payld_offset = cso >> 1;
+		stpd->tp_sum.cxsum_offset = css >> 1;
+		stpd->tp_sum.c_sum = 0x1;
+	}
+	return 0;
+}
+
+#else
+
 static int alx_tso_csum(struct alx_adapter *adpt, struct alx_tx_queue *txque,
 			struct sk_buff *skb, struct alx_tpdesc *stpd)
 {
 	struct pci_dev *pdev = adpt->pdev;
+#ifdef NETIF_F_TSO
 	u8 hdr_len;
 	u32 real_len;
 	int error;
+#endif
 
+#ifdef NETIF_F_TSO
 	if (skb_is_gso(skb)) {
 		if (skb_header_cloned(skb)) {
 			error = pskb_expand_head(skb, 0, 0, GFP_ATOMIC);
@@ -3048,7 +3591,7 @@ static int alx_tso_csum(struct alx_adapter *adpt, struct alx_tx_queue *txque,
 			hdr_len = (skb_transport_offset(skb) + tcp_hdrlen(skb));
 			if (unlikely(skb->len == hdr_len)) {
 				/* only xsum need */
-				dev_warn(&pdev->dev,
+				dev_warn(pci_dev_to_dev(pdev),
 				      "IPV4 tso with zero data??\n");
 				goto check_sum;
 			} else {
@@ -3060,7 +3603,7 @@ static int alx_tso_csum(struct alx_adapter *adpt, struct alx_tx_queue *txque,
 				stpd->tp_gnr.ipv4 = 1;
 			}
 		}
-
+#ifdef NETIF_F_TSO6
 		if (skb_shinfo(skb)->gso_type & SKB_GSO_TCPV6) {
 			struct alx_tpdesc etpd;
 			memset(&etpd, 0, sizeof(struct alx_tpdesc));
@@ -3071,7 +3614,7 @@ static int alx_tso_csum(struct alx_adapter *adpt, struct alx_tx_queue *txque,
 			hdr_len = (skb_transport_offset(skb) + tcp_hdrlen(skb));
 			if (unlikely(skb->len == hdr_len)) {
 				/* only xsum need */
-				dev_warn(&pdev->dev,
+				dev_warn(pci_dev_to_dev(pdev),
 					"IPV6 tso with zero data??\n");
 				goto check_sum;
 			} else
@@ -3085,20 +3628,22 @@ static int alx_tso_csum(struct alx_adapter *adpt, struct alx_tx_queue *txque,
 			stpd->tp_tso.lso_v2 = 0x1;
 			alx_set_tpdesc(txque, &etpd);
 		}
-
+#endif
 		stpd->tp_tso.lso = 0x1;
 		stpd->tp_tso.tcphdr_offset = skb_transport_offset(skb);
 		stpd->tp_tso.mss = skb_shinfo(skb)->gso_size;
 		return 0;
 	}
-
+#endif
+#ifdef NETIF_F_TSO
 check_sum:
+#endif
 	if (likely(skb->ip_summed == CHECKSUM_PARTIAL)) {
 		u8 css, cso;
 		cso = skb_transport_offset(skb);
 
 		if (unlikely(cso & 0x1)) {
-			dev_err(&pdev->dev,
+			dev_err(pci_dev_to_dev(pdev),
 			   "pay load offset should not ant event number\n");
 			return -1;
 		} else {
@@ -3111,6 +3656,8 @@ check_sum:
 	}
 	return 0;
 }
+
+#endif
 
 static void alx_tx_map(struct alx_adapter *adpt, struct sk_buff *skb,
 		       struct alx_tpdesc *stpd, struct alx_tx_queue *txque)
@@ -3185,9 +3732,10 @@ netdev_tx_t alx_start_xmit_frames(struct sk_buff *skb,
 				  struct alx_adapter *adpt,
 				  struct alx_tx_queue *txque)
 {
-	struct alx_hw *hw = &adpt->hw;
-	unsigned long flags = 0;
+	struct alx_hw     *hw = &adpt->hw;
+	unsigned long     flags = 0;
 	struct alx_tpdesc stpd; /* normal*/
+	//int               error;
 
 	if (test_bit(__ALX_DOWN, &adpt->alx_state)) {
 		dev_kfree_skb_any(skb);
@@ -3195,7 +3743,7 @@ netdev_tx_t alx_start_xmit_frames(struct sk_buff *skb,
 	}
 
 	if (!spin_trylock_irqsave(&adpt->tx_lock, flags)) {
-		DRV_PRINT(TX, EMERG, "tx locked!\n");
+		alx_err(adpt, "tx locked!\n");
 		return NETDEV_TX_LOCKED;
 	}
 
@@ -3206,17 +3754,28 @@ netdev_tx_t alx_start_xmit_frames(struct sk_buff *skb,
 		return NETDEV_TX_BUSY;
 	}
 
-	DRV_PRINT(TX, INFO, "Before XMIT: TX[%d]: tpq.consume_idx = 0x%x, "
-		  "tpq.produce_idx = 0x%x\n",
-		  txque->que_idx, txque->tpq.consume_idx,
-		  txque->tpq.produce_idx);
+	alx_netif_info(adpt, TX_ERR, "Before XMIT: TX[%d]: "
+		       "tpq.consume_idx = 0x%x, tpq.produce_idx = 0x%x\n",
+		       txque->que_idx, txque->tpq.consume_idx,
+		       txque->tpq.produce_idx);
 	memset(&stpd, 0, sizeof(struct alx_tpdesc));
 	/* do TSO and check sum */
+#if 1
 	if (alx_tso_csum(adpt, txque, skb, &stpd) != 0) {
 		spin_unlock_irqrestore(&adpt->tx_lock, flags);
 		dev_kfree_skb_any(skb);
 		return NETDEV_TX_OK;
 	}
+#else
+	error = alx_do_tso(adpt, txque, skb, &stpd);
+	if (error < 0) {
+		spin_unlock_irqrestore(&adpt->tx_lock, flags);
+		dev_kfree_skb_any(skb);
+		return NETDEV_TX_OK;
+	} else if (error == 0) {
+		alx_do_checksum(adpt, skb, &stpd);
+	}
+#endif
 
 	if (unlikely(adpt->vlgrp && vlan_tx_tag_present(skb))) {
 		u32 vlan = vlan_tx_tag_get(skb);
@@ -3233,10 +3792,13 @@ netdev_tx_t alx_start_xmit_frames(struct sk_buff *skb,
 	/* update produce idx */
 	wmb();
 	MEM_W16(hw, txque->produce_reg, txque->tpq.produce_idx);
-	DRV_PRINT(TX, INFO, "TX[%d]: Produce Reg[0x%x] = 0x%x.\n",
-		  txque->que_idx, txque->produce_reg,
-		  txque->tpq.produce_idx);
+	alx_netif_info(adpt, TX_ERR, "TX[%d]: Produce Reg[0x%x] = 0x%x.\n",
+		       txque->que_idx, txque->produce_reg,
+		       txque->tpq.produce_idx);
 
+#ifndef HAVE_TRANS_START_IN_QUEUE
+	txque->netdev->trans_start = jiffies;
+#endif
 	spin_unlock_irqrestore(&adpt->tx_lock, flags);
 	return NETDEV_TX_OK;
 }
@@ -3247,12 +3809,79 @@ static netdev_tx_t alx_start_xmit(struct sk_buff *skb,
 	struct alx_adapter *adpt = netdev_priv(netdev);
 	struct alx_tx_queue *txque;
 
+#if ALX_VALID_MTQ
+	alx_netif_info(adpt, TX_ERR, "skb->mark = 0x%x\n", skb->mark);
+	switch (skb->mark) {
+	case 0x0:
+		txque = adpt->tx_queue[0];
+		break;
+	case 0x1:
+		txque = adpt->tx_queue[1];
+		break;
+	case 0x2:
+		txque = adpt->tx_queue[2];
+		break;
+	case 0x3:
+		txque = adpt->tx_queue[3];
+		break;
+	default:
+		txque = adpt->tx_queue[0];
+		break;
+	}
+#else
 	txque = adpt->tx_queue[0];
+#endif
 	return alx_start_xmit_frames(skb, adpt, txque);
 }
 
+#ifdef CONFIG_ALX_DIAG
+static int alx_diag_send_packets(struct alx_adapter *adpt, 
+	                         char *buf, u32 size)
+{
+	struct alx_diag_packet *pkt = (struct alx_diag_packet *)adpt->diag_buf;
+	char *packet_data;
+	int  num_pkts = ALX_DIAG_MAX_PACKETS;
+	struct sk_buff *skb;
+
+	if (!buf) {
+		return -EINVAL;
+	}
+	
+	if (copy_from_user(pkt, buf, size)) {
+		return -EFAULT;
+	}
 
 
+	do {
+		if (pkt->length > adpt->rxbuf_size) {
+			alx_err(adpt, "packet length is greater than "
+				"skb buf size\n");
+		}
+		
+		skb = dev_alloc_skb(adpt->rxbuf_size);
+		if (unlikely(!skb)) {
+			alx_err(adpt, "alloc rx buffer failed\n");
+			break;
+		}
+	
+		packet_data = adpt->diag_buf + pkt->buf[0].offset;
+		skb_put(skb, pkt->length);
+		memcpy(skb->data, packet_data, pkt->length)
+
+		/* send the packet */
+		alx_start_xmit_frames(skb, adpt, struct alx_tx_queue * txque)
+
+		if (pkt->next == NULL)
+			break;
+		pkt++;
+	} while (--num_pkts);
+
+	return 0;	
+}
+#endif
+
+
+#ifdef SIOCGMIIPHY
 /*
  * alx_mii_ioctl -
  */
@@ -3262,11 +3891,9 @@ static int alx_mii_ioctl(struct net_device *netdev,
 	struct alx_adapter *adpt = netdev_priv(netdev);
 	struct alx_hw *hw = &adpt->hw;
 	struct mii_ioctl_data *data = if_mii(ifr);
-	u32 device_type;
-	u16 reg_addr;
 	int retval = 0;
 
-	DRV_PRINT(FUNC, DEBUG, "ENTER\n");
+	alx_netif_dbg(adpt, DRV, "ENTER\n");
 
 	if (!netif_running(netdev))
 		return -EINVAL;
@@ -3286,11 +3913,9 @@ static int alx_mii_ioctl(struct net_device *netdev,
 			retval = -EFAULT;
 			goto out;
 		}
-		device_type = ALX_MDIO_NORM_DEV;
-		reg_addr = data->reg_num;
 
-		retval = hw->cbs.read_phy_reg(hw, device_type, reg_addr,
-					      &data->val_out);
+		retval = hw->cbs.read_phy_reg(hw, ALX_MDIO_NORM_DEV,
+					      data->reg_num, &data->val_out);
 		if (retval) {
 			retval = -EIO;
 			goto out;
@@ -3307,13 +3932,11 @@ static int alx_mii_ioctl(struct net_device *netdev,
 			retval = -EFAULT;
 			goto out;
 		}
-		device_type = ALX_MDIO_NORM_DEV;
-		reg_addr = data->reg_num;
 
-		DRV_PRINT(IOCTL, DEBUG, "write %x %x",
-			  data->reg_num, data->val_in);
-		retval = hw->cbs.write_phy_reg(hw, device_type, reg_addr,
-					       data->val_in);
+		alx_netif_dbg(adpt, HW, "write %x %x\n",
+			      data->reg_num, data->val_in);
+		retval = hw->cbs.write_phy_reg(hw, ALX_MDIO_NORM_DEV,
+					       data->reg_num, data->val_in);
 		if (retval) {
 			retval = -EIO;
 			goto out;
@@ -3327,55 +3950,202 @@ out:
 	return retval;
 
 }
+#endif
 
 
 /*
- * alx_mac_ioctl -
+ * alx_cmd_ioctl -
  */
-static int alx_mac_ioctl(struct net_device *netdev,
+static int alx_cmd_ioctl(struct net_device *netdev,
 			 struct ifreq *ifr, int cmd)
 {
 	struct alx_adapter *adpt = netdev_priv(netdev);
 	struct alx_hw *hw = &adpt->hw;
-	struct mac_ioctl_data *data = (struct mac_ioctl_data *)&ifr->ifr_ifru;
+	struct ext_ioctl_data *ext = (struct ext_ioctl_data *)&ifr->ifr_ifru;
+	u32 *rss_tbl, *rss_key;
 	int retval = 0;
 
-	DRV_PRINT(FUNC, DEBUG, "ENTER\n");
+	alx_netif_dbg(adpt, DRV, "ENTER\n");
 
-	if (!netif_running(netdev))
-		return -EINVAL;
-
-	switch (cmd) {
-	case SIOCDEVGMACREG:
-		DRV_PRINT(IOCTL, DEBUG, "read mac %x %x",
-			  data->reg_num, data->reg_val);
-		MEM_R32(hw, data->reg_num, &data->reg_val);
+	switch (ext->cmd_type) {
+	case ALX_IOCTL_EXT_DEV_INACTIVE:
+		alx_netif_dbg(adpt, HW, "EXT: inactive command\n");
+		//alx_stop(netdev);
 		break;
 
-	case SIOCDEVSMACREG:
-		DRV_PRINT(IOCTL, DEBUG, "write mac %x %x",
-			  data->reg_num, data->reg_val);
-		MEM_W32(hw, data->reg_num, data->reg_val);
+	case ALX_IOCTL_EXT_DEV_RESET:
+		alx_netif_dbg(adpt, HW, "EXT: reset command\n");
+		//alx_open(netdev);
+		break;
+
+	case ALX_IOCTL_EXT_SEND_PKTS:
+		alx_netif_dbg(adpt, HW, "EXT: diag rx data\n");
+		break;
+	case ALX_IOCTL_EXT_RECV_PKTS:
+		alx_netif_dbg(adpt, HW, "EXT: diag rx data\n");
+		break;
+
+	case ALX_IOCTL_EXT_GMAC_REG_32:
+		MEM_R32(hw, ext->cmd_mac.num, &ext->cmd_mac.val32);
+		alx_netif_dbg(adpt, HW, "EXT: read reg_32 %04x %08x\n",
+			      ext->cmd_mac.num, ext->cmd_mac.val32);
+		break;
+	case ALX_IOCTL_EXT_SMAC_REG_32:
+		MEM_W32(hw, ext->cmd_mac.num, ext->cmd_mac.val32);
+		alx_netif_dbg(adpt, HW, "EXT: write reg_32 %04x %08x\n",
+			      ext->cmd_mac.num, ext->cmd_mac.val32);
+		break;
+		
+	case ALX_IOCTL_EXT_GMAC_REG_16:
+		MEM_R16(hw, ext->cmd_mac.num, &ext->cmd_mac.val16);
+		alx_netif_dbg(adpt, HW, "EXT: read reg_16 %04x %08x\n",
+			      ext->cmd_mac.num, ext->cmd_mac.val16);
+		break;
+	case ALX_IOCTL_EXT_SMAC_REG_16:
+		MEM_W16(hw, ext->cmd_mac.num, ext->cmd_mac.val16);
+		alx_netif_dbg(adpt, HW, "EXT: write reg_16 %04x %08x\n",
+			      ext->cmd_mac.num, ext->cmd_mac.val16);
+		break;
+	case ALX_IOCTL_EXT_GMAC_REG_8:
+		MEM_R8(hw, ext->cmd_mac.num, &ext->cmd_mac.val8);
+		alx_netif_dbg(adpt, HW, "EXT: read reg_8 %04x %08x\n",
+			      ext->cmd_mac.num, ext->cmd_mac.val8);
+		break;
+	case ALX_IOCTL_EXT_SMAC_REG_8:
+		MEM_W8(hw, ext->cmd_mac.num, ext->cmd_mac.val8);
+		alx_netif_dbg(adpt, HW, "EXT: write reg_8 %04x %08x\n",
+			      ext->cmd_mac.num, ext->cmd_mac.val8);
+		break;
+
+	case ALX_IOCTL_EXT_GMAC_CFG_32:
+		CFG_R32(hw, ext->cmd_mac.num, &ext->cmd_mac.val32);
+		alx_netif_dbg(adpt, HW, "EXT: read cfg_32 %04x %08x\n",
+			      ext->cmd_mac.num, ext->cmd_mac.val32);
+		break;
+	case ALX_IOCTL_EXT_SMAC_CFG_32:
+		CFG_W32(hw, ext->cmd_mac.num, ext->cmd_mac.val32);
+		alx_netif_dbg(adpt, HW, "EXT: write cfg_32 %04x %08x\n",
+			      ext->cmd_mac.num, ext->cmd_mac.val32);
+		break;
+
+
+	case ALX_IOCTL_EXT_GMII_EXT_REG:
+		if (!capable(CAP_NET_ADMIN)) {
+			retval = -EPERM;
+			goto out;
+		}
+
+		if (ext->cmd_mii.num & ~(0x1F)) {
+			retval = -EFAULT;
+			goto out;
+		}
+
+		retval = hw->cbs.read_phy_reg(hw, ext->cmd_mii.dev,
+					      ext->cmd_mii.num,
+					      &ext->cmd_mii.val);
+		alx_netif_dbg(adpt, HW, "EXT: read phy %02x:%02x %04x\n",
+			      ext->cmd_mii.dev, ext->cmd_mii.num,
+			      ext->cmd_mii.val);
+		if (retval) {
+			retval = -EIO;
+			goto out;
+		}
+		break;
+
+	case ALX_IOCTL_EXT_SMII_EXT_REG:
+		if (!capable(CAP_NET_ADMIN)) {
+			retval = -EPERM;
+			goto out;
+		}
+
+		if (ext->cmd_mii.num & ~(0x1F)) {
+			retval = -EFAULT;
+			goto out;
+		}
+
+		retval = hw->cbs.write_phy_reg(hw, ext->cmd_mii.dev,
+					      ext->cmd_mii.num,
+					      ext->cmd_mii.val);
+		alx_netif_dbg(adpt, HW, "EXT: write phy %02x:%02x %04x\n",
+			      ext->cmd_mii.dev, ext->cmd_mii.num,
+			      ext->cmd_mii.val);
+		if (retval) {
+			retval = -EIO;
+			goto out;
+		}
+		break;
+
+
+	case ALX_IOCTL_EXT_GRSS_KEY_32:
+		rss_key = (u32 *)adpt->hw.rss_key;
+		if (ext->cmd_rss.num >= 10) {
+			goto out;
+		}
+		ext->cmd_rss.val = rss_key[ext->cmd_rss.num];
+		alx_netif_dbg(adpt, HW, "EXT: read rss_key %02x %08x\n",
+			      ext->cmd_rss.num, ext->cmd_rss.val);
+		break;
+	case ALX_IOCTL_EXT_SRSS_KEY_32:
+		rss_key = (u32 *)adpt->hw.rss_key;
+		if (ext->cmd_rss.num >= 10) {
+			goto out;
+		}
+		rss_key[ext->cmd_rss.num] = ext->cmd_rss.val;
+		alx_netif_dbg(adpt, HW, "EXT: write rss_key %02x %08x\n",
+			      ext->cmd_rss.num, ext->cmd_rss.val);
+		break;
+
+		
+	case ALX_IOCTL_EXT_GRSS_TAB_32:
+		rss_tbl = (u32 *)adpt->hw.rss_idt;
+		if (ext->cmd_rss.num >= 32) {
+			goto out;
+		}
+		ext->cmd_rss.val = rss_tbl[ext->cmd_rss.num];
+		alx_netif_dbg(adpt, HW, "EXT: read rss_tbl %02x %08x\n",
+			      ext->cmd_rss.num, ext->cmd_rss.val);
+		break;
+	case ALX_IOCTL_EXT_SRSS_TAB_32:
+		rss_tbl = (u32 *)adpt->hw.rss_idt;
+		if (ext->cmd_rss.num >= 32) {
+			goto out;
+		}
+		rss_tbl[ext->cmd_rss.num] = ext->cmd_rss.val;
+		alx_netif_dbg(adpt, HW, "EXT: write rss_tbl %02x 0x%08x\n",
+			      ext->cmd_rss.num, ext->cmd_rss.val);
+		break;
+
+
+	case ALX_IOCTL_EXT_RSS_UPDATE:
+		alx_netif_dbg(adpt, HW, "EXT: rss update command\n");
+		if (hw->cbs.config_rss)
+			hw->cbs.config_rss(hw, true);
 		break;
 	default:
 		retval = -EOPNOTSUPP;
 		break;
 	}
-
+out:
 	return retval;
 }
+
+
 
 static int alx_ioctl(struct net_device *netdev, struct ifreq *ifr, int cmd)
 {
 	switch (cmd) {
+#ifdef SIOCGMIIPHY
 	case SIOCGMIIPHY:
 	case SIOCGMIIREG:
 	case SIOCSMIIREG:
 		return alx_mii_ioctl(netdev, ifr, cmd);
-
-	case SIOCDEVGMACREG: /* Read MAC Register */
-	case SIOCDEVSMACREG: /* Write MAC Register */
-		return alx_mac_ioctl(netdev, ifr, cmd);
+#endif
+#ifdef ETHTOOL_OPS_COMPAT
+	case SIOCETHTOOL:
+		return ethtool_ioctl(ifr);
+#endif
+	case SIOCDEVEXTCOMMAND:
+		return alx_cmd_ioctl(netdev, ifr, cmd);
 	default:
 		return -EOPNOTSUPP;
 	}
@@ -3389,11 +4159,15 @@ static void alx_poll_controller(struct net_device *netdev)
 	int num_msix_intrs = adpt->num_msix_intrs;
 	int msix_idx;
 
-	DRV_PRINT(FUNC, DEBUG, "ENTER\n");
+	alx_netif_dbg(adpt, DRV, "ENTER\n");
 
 	/* if interface is down do nothing */
 	if (test_bit(__ALX_DOWN, &adpt->alx_state))
 		return;
+
+#ifndef CONFIG_ALX_NAPI
+	alx_disable_intr(adpt);
+#endif
 
 	if (CHK_ADPT_FLAG(0, MSIX_EN)) {
 		for (msix_idx = 0; msix_idx < num_msix_intrs; msix_idx++) {
@@ -3412,25 +4186,64 @@ static void alx_poll_controller(struct net_device *netdev)
 	} else {
 		alx_interrupt(adpt->pdev->irq, netdev);
 	}
+
+#ifndef CONFIG_ALX_NAPI
+	alx_enable_intr(adpt);
+#endif
 }
 #endif
 
+#ifdef HAVE_NET_DEVICE_OPS
 static const struct net_device_ops alx_netdev_ops = {
 	.ndo_open               = alx_open,
 	.ndo_stop               = alx_stop,
 	.ndo_start_xmit         = alx_start_xmit,
 	.ndo_get_stats          = alx_get_hw_stats,
-	.ndo_set_rx_mode        = alx_set_multicase_list,
+	.ndo_set_multicast_list = alx_set_multicase_list,
 	.ndo_validate_addr      = eth_validate_addr,
 	.ndo_set_mac_address    = alx_set_mac_addr,
 	.ndo_change_mtu         = alx_change_mtu,
 	.ndo_do_ioctl           = alx_ioctl,
 	.ndo_tx_timeout         = alx_tx_timeout,
+#ifdef NETIF_F_HW_VLAN_TX
+	/*joe
+	.ndo_vlan_rx_register   = alx_vlan_rx_register,
+	*/
+#endif
 #ifdef CONFIG_NET_POLL_CONTROLLER
 	.ndo_poll_controller    = alx_poll_controller,
 #endif
 };
+#endif /* HAVE_NET_DEVICE_OPS */
 
+void alx_init_netdev_cbs(struct net_device *netdev)
+{
+	struct alx_adapter *adpt;
+	adpt = netdev_priv(netdev);
+
+#ifdef HAVE_NET_DEVICE_OPS
+	netdev->netdev_ops = &alx_netdev_ops;
+#else /* HAVE_NET_DEVICE_OPS */
+	netdev->open               = &alx_open;
+	netdev->stop               = &alx_stop;
+	netdev->hard_start_xmit    = &alx_start_xmit;
+	netdev->get_stats          = &alx_get_hw_stats;
+	netdev->set_multicast_list = &alx_set_multicase_list;
+	netdev->set_mac_address    = &alx_set_mac_addr;
+	netdev->change_mtu         = &alx_change_mtu;
+	netdev->do_ioctl           = &alx_ioctl;
+	netdev->tx_timeout         = &alx_tx_timeout;
+#ifdef NETIF_F_HW_VLAN_TX
+	netdev->vlan_rx_register   = alx_vlan_rx_register;
+#endif
+#ifdef CONFIG_NET_POLL_CONTROLLER
+	netdev->poll_controller    = alx_poll_controller;
+#endif /* CONFIG_NET_POLL_CONTROLLER */
+#endif /* HAVE_NET_DEVICE_OPS */
+
+	alx_set_ethtool_ops(netdev);
+	netdev->watchdog_timeo = ALX_WATCHDOG_TIME;
+}
 
 /*
  * alx_init - Device Initialization Routine
@@ -3447,7 +4260,7 @@ int __devinit alx_init(struct pci_dev *pdev,
 	/* enable device (incl. PCI PM wakeup and hotplug setup) */
 	retval = pci_enable_device_mem(pdev);
 	if (retval) {
-		dev_err(&pdev->dev, "cannot enable PCI device\n");
+		dev_err(pci_dev_to_dev(pdev), "cannot enable PCI device\n");
 		goto err_alloc_device;
 	}
 
@@ -3456,16 +4269,16 @@ int __devinit alx_init(struct pci_dev *pdev,
 	 * shared register for the high 32 bits, so only a single, aligned,
 	 * 4 GB physical address range can be used at a time.
 	 */
-	if (!dma_set_mask(&pdev->dev, DMA_BIT_MASK(64)) &&
-	    !dma_set_coherent_mask(&pdev->dev, DMA_BIT_MASK(64))) {
-		dev_info(&pdev->dev, "DMA to 64-BIT addresses.\n");
+	if (!dma_set_mask(pci_dev_to_dev(pdev), DMA_BIT_MASK(64)) &&
+	    !dma_set_coherent_mask(pci_dev_to_dev(pdev), DMA_BIT_MASK(64))) {
+		dev_info(pci_dev_to_dev(pdev), "DMA to 64-BIT addresses.\n");
 	} else {
-		retval = dma_set_mask(&pdev->dev, DMA_BIT_MASK(32));
+		retval = dma_set_mask(pci_dev_to_dev(pdev), DMA_BIT_MASK(32));
 		if (retval) {
-			retval = dma_set_coherent_mask(&pdev->dev,
+			retval = dma_set_coherent_mask(pci_dev_to_dev(pdev),
 						       DMA_BIT_MASK(32));
 			if (retval) {
-				dev_err(&pdev->dev, "No usable DMA "
+				dev_err(pci_dev_to_dev(pdev), "No usable DMA "
 					"configuration, aborting\n");
 				goto err_alloc_pci_res;
 			}
@@ -3475,7 +4288,7 @@ int __devinit alx_init(struct pci_dev *pdev,
 	retval = pci_request_selected_regions(pdev, pci_select_bars(pdev,
 					IORESOURCE_MEM), alx_drv_name);
 	if (retval) {
-		dev_err(&pdev->dev,
+		dev_err(pci_dev_to_dev(pdev),
 			"pci_request_selected_regions failed 0x%x\n", retval);
 		goto err_alloc_pci_res;
 	}
@@ -3486,7 +4299,7 @@ int __devinit alx_init(struct pci_dev *pdev,
 
 	netdev = alloc_etherdev(sizeof(struct alx_adapter));
 	if (netdev == NULL) {
-		dev_err(&pdev->dev, "etherdev alloc failed\n");
+		dev_err(pci_dev_to_dev(pdev), "etherdev alloc failed\n");
 		retval = -ENOMEM;
 		goto err_alloc_netdev;
 	}
@@ -3500,36 +4313,41 @@ int __devinit alx_init(struct pci_dev *pdev,
 	adpt->pdev = pdev;
 	hw = &adpt->hw;
 	hw->adpt = adpt;
-	adpt->msg_flags = ALX_MSG_DEFAULT;
+	adpt->msg_enable = ALX_MSG_DEFAULT;
+
+#ifdef HAVE_PCI_ERS
+	/*
+	 * call save state here in standalone driver because it relies on
+	 * adapter struct to exist, and needs to call netdev_priv
+	 */
+	pci_save_state(pdev);
+#endif
 
 	adpt->hw.hw_addr = ioremap(pci_resource_start(pdev, BAR_0),
 				   pci_resource_len(pdev, BAR_0));
 	if (!adpt->hw.hw_addr) {
-		DRV_PRINT(INIT, ERR, "cannot map device registers\n");
+		alx_err(adpt, "cannot map device registers\n");
 		retval = -EIO;
 		goto err_iomap;
 	}
 	netdev->base_addr = (unsigned long)adpt->hw.hw_addr;
 
 	/* set cb member of netdev structure*/
-	netdev->netdev_ops = &alx_netdev_ops;
-	alx_set_ethtool_ops(netdev);
-	netdev->watchdog_timeo = ALX_WATCHDOG_TIME;
-	strncpy(netdev->name, pci_name(pdev), sizeof(netdev->name) - 1);
+	alx_init_netdev_cbs(netdev);
 
 	adpt->bd_number = cards_found;
 
 	/* init alx_adapte structure */
 	retval = alx_init_adapter(adpt);
 	if (retval) {
-		DRV_PRINT(INIT, ERR, "net device private data init failed\n");
+		alx_err(adpt, "net device private data init failed\n");
 		goto err_init_adapter;
 	}
 
 	/* 1. reset pcie */
 	retval = hw->cbs.reset_pcie(hw, true, true);
 	if (retval) {
-		DRV_PRINT(INIT, ERR, "PCIE Reset failed (%d).\n", retval);
+		alx_err(adpt, "PCIE Reset failed (%d).\n", retval);
 		retval = -EIO;
 		goto err_init_adapter;
 	}
@@ -3537,7 +4355,7 @@ int __devinit alx_init(struct pci_dev *pdev,
 	/* 2. Init GPHY as early as possible due to power saving issue  */
 	retval = hw->cbs.reset_phy(hw);
 	if (retval) {
-		DRV_PRINT(INIT, ERR, "PHY Reset failed (%d).\n", retval);
+		alx_err(adpt, "PHY Reset failed (%d).\n", retval);
 		retval = -EIO;
 		goto err_init_adapter;
 	}
@@ -3545,7 +4363,7 @@ int __devinit alx_init(struct pci_dev *pdev,
 	/* 3. reset mac */
 	retval = hw->cbs.reset_mac(hw);
 	if (retval) {
-		DRV_PRINT(INIT, ERR, "MAC Reset failed (%d).\n", retval);
+		alx_err(adpt, "MAC Reset failed (%d).\n", retval);
 		retval = -EIO;
 		goto err_init_adapter;
 	}
@@ -3563,27 +4381,46 @@ int __devinit alx_init(struct pci_dev *pdev,
 		retval = hw->cbs.set_mac_addr(hw, hw->mac_addr);
 
 	/* 6. get user settings */
-	adpt->num_txdescs = 1024;
-	adpt->num_rxdescs = 512;
-	adpt->max_rxques = min(ALX_MAX_RX_QUEUES, (int)num_online_cpus());
-	adpt->max_txques = min(ALX_MAX_TX_QUEUES, (int)num_online_cpus());
+	alx_get_user_settings(adpt);
+	adpt->max_rxques = min_t(int, ALX_MAX_RX_QUEUES, num_online_cpus());
+	adpt->max_txques = min_t(int, ALX_MAX_TX_QUEUES, num_online_cpus());
 
 
+#ifdef MAX_SKB_FRAGS
+#ifdef NETIF_F_HW_VLAN_TX
 	netdev->features = NETIF_F_SG |
 			   NETIF_F_HW_CSUM |
 			   NETIF_F_HW_VLAN_TX |
 			   NETIF_F_HW_VLAN_RX;
+#else
+	netdev->features = NETIF_F_SG | NETIF_F_HW_CSUM;
+#endif /* NETIF_F_HW_VLAN_TX */
+
+#ifdef NETIF_F_TSO
 	netdev->features |= NETIF_F_TSO;
+#ifdef NETIF_F_TSO6
 	netdev->features |= NETIF_F_TSO6;
+#endif /* NETIF_F_TSO6 */
+#endif /* NETIF_F_TSO */
+#endif
 
 
 	memcpy(netdev->dev_addr, hw->mac_perm_addr, netdev->addr_len);
+#ifdef ETHTOOL_GPERMADDR
 	memcpy(netdev->perm_addr, hw->mac_perm_addr, netdev->addr_len);
 	if (alx_validate_mac_addr(netdev->perm_addr)) {
+		alx_err(adpt, "invalid MAC address\n");
+		retval = -EIO;
+		goto err_init_adapter;
+	}
+#else
+	if (alx_validate_mac_addr(netdev->dev_addr)) {
 		DRV_PRINT(INIT, INFO, "invalid MAC address\n");
 		retval = -EIO;
 		goto err_init_adapter;
 	}
+#endif
+
 
 	setup_timer(&adpt->alx_timer, &alx_timer_routine,
 		    (unsigned long)adpt);
@@ -3593,32 +4430,37 @@ int __devinit alx_init(struct pci_dev *pdev,
 	alx_set_num_queues(adpt);
 	retval = alx_set_interrupt_mode(adpt);
 	if (retval) {
-		DRV_PRINT(INIT, ERR, "can't set interrupt mode.\n");
+		alx_err(adpt, "can't set interrupt mode.\n");
 		goto err_set_interrupt_mode;
 	}
 
 	retval = alx_set_interrupt_param(adpt);
 	if (retval) {
-		DRV_PRINT(INIT, ERR, "can't set interrupt parameter.\n");
+		alx_err(adpt, "can't set interrupt parameter.\n");
 		goto err_set_interrupt_param;
 	}
 
 	retval = alx_alloc_all_rtx_queue(adpt);
 	if (retval) {
-		DRV_PRINT(INIT, ERR, "can't allocate memory for queues\n");
+		alx_err(adpt, "can't allocate memory for queues\n");
 		goto err_alloc_rtx_queue;
 	}
 
 	alx_set_register_info_special(adpt);
 
-	DRV_PRINT(PCI, INFO, "num_msix_noque_intrs = %d, "
-		  "num_msix_rxque_intrs = %d, "
-		  "num_msix_txque_intrs = %d.\n",
-		  adpt->num_msix_noques,
-		  adpt->num_msix_rxques,
-		  adpt->num_msix_txques);
-	DRV_PRINT(PCI, INFO, "num_msix_all_intrs = %d.\n",
-		  adpt->num_msix_intrs);
+	alx_netif_dbg(adpt, PROBE, "num_msix_noque_intrs = %d, "
+		"num_msix_rxque_intrs = %d, "
+		"num_msix_txque_intrs = %d.\n",
+		adpt->num_msix_noques,
+		adpt->num_msix_rxques,
+		adpt->num_msix_txques);
+	alx_netif_dbg(adpt, PROBE, "num_msix_all_intrs = %d.\n",
+		adpt->num_msix_intrs);
+
+	alx_netif_dbg(adpt, PROBE, "RX Queue Count = %u, HRX Queue Count = %u, "
+		"SRX Queue Count = %u, TX Queue Count = %u\n",
+		adpt->num_rxques, adpt->num_hw_rxques, adpt->num_sw_rxques,
+		adpt->num_txques);
 
 	/* WOL not supported for all but the following */
 	switch (hw->pci_devid) {
@@ -3644,7 +4486,7 @@ int __devinit alx_init(struct pci_dev *pdev,
 	strcpy(netdev->name, "eth%d");
 	retval = register_netdev(netdev);
 	if (retval) {
-		DRV_PRINT(INIT, ERR, "register netdevice failed\n");
+		alx_err(adpt, "register netdevice failed\n");
 		goto err_register_netdev;
 	}
 	adpt->netdev_registered = true;
@@ -3655,34 +4497,29 @@ int __devinit alx_init(struct pci_dev *pdev,
 	netif_tx_stop_all_queues(netdev);
 
 	/* print the MAC address */
-	DRV_PRINT(INIT, INFO, "%2.2x:%2.2x:%2.2x:%2.2x:%2.2x:%2.2x\n",
-		  netdev->dev_addr[0], netdev->dev_addr[1],
-		  netdev->dev_addr[2], netdev->dev_addr[3],
-		  netdev->dev_addr[4], netdev->dev_addr[5]);
-
-	DRV_PRINT(INIT, INFO, "RX Queue Count = %u, HRX Queue Count = %u, "
-		  "SRX Queue Count = %u, TX Queue Count = %u\n",
-		  adpt->num_rxques, adpt->num_hw_rxques, adpt->num_sw_rxques,
-		  adpt->num_txques);
+	alx_netif_info(adpt, PROBE, "%2.2x:%2.2x:%2.2x:%2.2x:%2.2x:%2.2x\n",
+		       netdev->dev_addr[0], netdev->dev_addr[1],
+		       netdev->dev_addr[2], netdev->dev_addr[3],
+		       netdev->dev_addr[4], netdev->dev_addr[5]);
 
 	/* print the adapter capability */
 	if (CHK_ADPT_FLAG(0, MSI_CAP))
-		DRV_PRINT(INIT, INFO, "MSI Capable: %s.\n",
-			  CHK_ADPT_FLAG(0, MSI_EN) ? "Enable" : "Disable");
+		alx_netif_info(adpt, PROBE, "MSI Capable: %s.\n",
+			 CHK_ADPT_FLAG(0, MSI_EN) ? "Enable" : "Disable");
 	if (CHK_ADPT_FLAG(0, MSIX_CAP))
-		DRV_PRINT(INIT, INFO, "MSIX Capable: %s.\n",
-			  CHK_ADPT_FLAG(0, MSIX_EN) ? "Enable" : "Disable");
+		alx_netif_info(adpt, PROBE, "MSIX Capable: %s.\n",
+			 CHK_ADPT_FLAG(0, MSIX_EN) ? "Enable" : "Disable");
 	if (CHK_ADPT_FLAG(0, MRQ_CAP))
-		DRV_PRINT(INIT, INFO, "MRQ Capable: %s.\n",
-			  CHK_ADPT_FLAG(0, MRQ_EN) ? "Enable" : "Disable");
+		alx_netif_info(adpt, PROBE, "MRQ Capable: %s.\n",
+			 CHK_ADPT_FLAG(0, MRQ_EN) ? "Enable" : "Disable");
 	if (CHK_ADPT_FLAG(0, MRQ_CAP))
-		DRV_PRINT(INIT, INFO, "MTQ Capable: %s.\n",
-			  CHK_ADPT_FLAG(0, MTQ_EN) ? "Enable" : "Disable");
+		alx_netif_info(adpt, PROBE, "MTQ Capable: %s.\n",
+			 CHK_ADPT_FLAG(0, MTQ_EN) ? "Enable" : "Disable");
 	if (CHK_ADPT_FLAG(0, SRSS_CAP))
-		DRV_PRINT(INIT, INFO, "RSS(SW) Capable: %s.\n",
-			  CHK_ADPT_FLAG(0, SRSS_EN) ? "Enable" : "Disable");
+		alx_netif_info(adpt, PROBE, "RSS(SW) Capable: %s.\n",
+			 CHK_ADPT_FLAG(0, SRSS_EN) ? "Enable" : "Disable");
 
-	DRV_PRINT(INIT, INFO, "Atheros Gigabit Network Connection\n");
+	printk(KERN_INFO "alx: Atheros Gigabit Network Connection\n");
 	cards_found++;
 	return 0;
 
@@ -3703,7 +4540,7 @@ err_alloc_netdev:
 err_alloc_pci_res:
 	pci_disable_device(pdev);
 err_alloc_device:
-	DRV_PRINT(INIT, INFO, "Error when probe device(%d).\n", retval);
+	alx_err(adpt, "Error when probe device(%d).\n", retval);
 	return retval;
 }
 
@@ -3716,7 +4553,6 @@ static void __devexit alx_remove(struct pci_dev *pdev)
 	struct alx_adapter *adpt = pci_get_drvdata(pdev);
 	struct alx_hw *hw = &adpt->hw;
 	struct net_device *netdev = adpt->netdev;
-	int que_idx;
 
 	set_bit(__ALX_DOWN, &adpt->alx_state);
 	cancel_work_sync(&adpt->alx_task);
@@ -3729,14 +4565,7 @@ static void __devexit alx_remove(struct pci_dev *pdev)
 		adpt->netdev_registered = false;
 	}
 
-	for (que_idx = 0; que_idx < adpt->num_txques; que_idx++) {
-		kfree(adpt->tx_queue[que_idx]);
-		adpt->tx_queue[que_idx] = NULL;
-	}
-	for (que_idx = 0; que_idx < adpt->num_rxques; que_idx++) {
-		kfree(adpt->rx_queue[que_idx]);
-		adpt->rx_queue[que_idx] = NULL;
-	}
+	alx_free_all_rtx_queue(adpt);
 	alx_reset_interrupt_param(adpt);
 	alx_reset_interrupt_mode(adpt);
 
@@ -3744,13 +4573,15 @@ static void __devexit alx_remove(struct pci_dev *pdev)
 	pci_release_selected_regions(pdev,
 				     pci_select_bars(pdev, IORESOURCE_MEM));
 
-	DRV_PRINT(INIT, INFO, "complete\n");
+	alx_netif_info(adpt, PROBE, "complete\n");
 	free_netdev(netdev);
 
 	pci_disable_pcie_error_reporting(pdev);
 
 	pci_disable_device(pdev);
 }
+
+#ifdef CONFIG_AT_PCI_ERS
 
 
 /*
@@ -3784,8 +4615,7 @@ static pci_ers_result_t alx_pci_error_slot_reset(struct pci_dev *pdev)
 	pci_ers_result_t result;
 
 	if (pci_enable_device_mem(pdev)) {
-		DRV_PRINT(INIT, ERR,
-			"Cannot re-enable PCI device after reset.\n");
+		alx_err(adpt, "Cannot re-enable PCI device after reset.\n");
 		result =  PCI_ERS_RESULT_DISCONNECT;
 	} else {
 		pci_set_master(pdev);
@@ -3825,6 +4655,8 @@ static struct pci_error_handlers alx_err_handler = {
 	.resume         = alx_pci_error_resume,
 };
 
+#endif
+
 
 static struct pci_driver alx_driver = {
 	.name     = alx_drv_name,
@@ -3835,8 +4667,12 @@ static struct pci_driver alx_driver = {
 	.suspend  = alx_suspend,
 	.resume   = alx_resume,
 #endif
+#ifndef USE_REBOOT_NOTIFIER
 	.shutdown = alx_shutdown,
+#endif
+#ifdef CONFIG_AT_PCI_ERS
 	.err_handler = &alx_err_handler
+#endif
 };
 
 
@@ -3847,7 +4683,10 @@ static int __init alx_init_module(void)
 			alx_drv_description, alx_drv_version);
 	printk(KERN_INFO "%s\n", alx_copyright);
 	retval = pci_register_driver(&alx_driver);
-
+#ifdef USE_REBOOT_NOTIFIER
+	if (retval >= 0)
+		register_reboot_notifier(&reboot_notifier);
+#endif
 	return retval;
 }
 module_init(alx_init_module);
@@ -3856,8 +4695,30 @@ module_init(alx_init_module);
 
 static void __exit alx_exit_module(void)
 {
+#ifdef USE_REBOOT_NOTIFIER
+	unregister_reboot_notifier(&reboot_notifier);
+#endif
 	pci_unregister_driver(&alx_driver);
 }
 
+#ifdef USE_REBOOT_NOTIFIER
+static int alx_notify_reboot(struct notifier_block *nb, unsigned long event,
+			     void *p)
+{
+	struct pci_dev *pdev = NULL;
+
+	switch (event) {
+	case SYS_DOWN:
+	case SYS_HALT:
+	case SYS_POWER_OFF:
+		while ((pdev = pci_find_device(PCI_ANY_ID, PCI_ANY_ID, pdev))) {
+			if (pci_dev_driver(pdev) == &alx_driver)
+				alx_suspend(pdev, PMSG_SUSPEND);
+		}
+	}
+	return NOTIFY_DONE;
+
+}
+#endif
 
 module_exit(alx_exit_module);
