@@ -131,21 +131,6 @@
 #define ALX_MISC                        0x19C0
 #define ALX_MISC_INTNLOSC_OPEN          BIT_3
 
-/* HW_PRINT */
-#define ALX_HW_MSG_LV_ERR	1
-#define ALX_HW_MSG_LV_INFO	0
-#define ALX_HW_MSG_LV_DEBUG	0
-
-#define ALX_HW_MSG_LV_ALL	0
-#define ALX_HW_MSG_PFX_NAME	"alx_hw: "
-
-#define HW_PRINT(_klv, _fmt, _args...) \
-	if (ALX_HW_MSG_LV_##_klv || ALX_HW_MSG_LV_ALL) {\
-		printk(KERN_##_klv ALX_HW_MSG_PFX_NAME "%s: " _fmt, \
-			__func__, ## _args); \
-	}
-
-
 /* delay function */
 #define US_DELAY(_hw, _n)	__US_DELAY(_n)
 #define MS_DELAY(_hw, _n)	__MS_DELAY(_n)
@@ -517,7 +502,7 @@ typedef ETHCONTEXT * PETHCONTEXT;
 
 #define MEM_R32(_hw, _reg, _pval)				\
 	do {							\
-		if (unlikely(!(_hw)->link_up))		\
+		if (unlikely(!(_hw)->link_up))			\
 			readl((_hw)->hw_addr + (_reg));		\
 		*(u32 *)_pval = readl((_hw)->hw_addr + (_reg));	\
 	} while (0)
@@ -534,7 +519,7 @@ typedef ETHCONTEXT * PETHCONTEXT;
 
 #define MEM_R16(_hw, _reg, _pval)				\
 	do {							\
-		if (unlikely(!(_hw)->link_up))		\
+		if (unlikely(!(_hw)->link_up))			\
 			readw((_hw)->hw_addr + (_reg));		\
 		*(u16 *)_pval = readw((_hw)->hw_addr + (_reg));	\
 	} while (0)
@@ -551,13 +536,19 @@ typedef ETHCONTEXT * PETHCONTEXT;
 
 #define MEM_R8(_hw, _reg, _pval)				\
 	do {							\
-		if (unlikely(!(_hw)->link_up))		\
+		if (unlikely(!(_hw)->link_up))			\
 			readb((_hw)->hw_addr + (_reg));		\
 		*(u8 *)_pval = readb((_hw)->hw_addr + (_reg));	\
 	} while (0)
 
-#define CFG_W16(_hw, _reg, _val)     MEM_W16(_hw, _reg, _val)
-#define CFG_R16(_hw, _reg, _pval)    MEM_R16(_hw, _reg, _pval)
+
+int alx_cfg_r32(struct alx_hw *hw, int reg, u32 *pval);
+int alx_cfg_w32(struct alx_hw *hw, int reg, u32 val);
+
+#define CFG_W32(_hw, _reg, _val) 	alx_cfg_w32(_hw, _reg, _val)
+#define CFG_R32(_hw, _reg, _pval)	alx_cfg_r32(_hw, _reg, _pval)
+#define CFG_W16(_hw, _reg, _val)	MEM_W16(_hw, _reg, _val)
+#define CFG_R16(_hw, _reg, _pval)	MEM_R16(_hw, _reg, _pval)
 
 
 /* special definitions for hw */
@@ -576,18 +567,13 @@ extern int alc_init_hw_callbacks(struct alx_hw *hw);
 extern int alf_init_hw_callbacks(struct alx_hw *hw);
 
 /* Error Codes */
-#define ALX_SUCCESS			0
+#define ALX_ERR_MAC_INIT		-1
+#define ALX_ERR_MAC_RESET		-2
+#define ALX_ERR_MAC_START		-3
+#define ALX_ERR_MAC_STOP		-4
+#define ALX_ERR_MAC_CONFIGURE		-5
+#define ALX_ERR_MAC_ADDR		-6
 
-#define ALX_ERR_MAC			-1
-#define ALX_ERR_MAC_INIT		-2
-#define ALX_ERR_MAC_RESET		-3
-#define ALX_ERR_MAC_START		-4
-#define ALX_ERR_MAC_STOP		-5
-#define ALX_ERR_MAC_CONFIGURE		-6
-#define ALX_ERR_MAC_ADDR		-7
-
-#define ALX_ERR_PHY			-20
-#define ALX_ERR_PHY_INIT		-21
 #define ALX_ERR_PHY_RESET		-22
 #define ALX_ERR_PHY_SETUP_LNK		-23
 #define ALX_ERR_PHY_CHECK_LNK		-24
@@ -595,20 +581,32 @@ extern int alf_init_hw_callbacks(struct alx_hw *hw);
 #define ALX_ERR_PHY_WRITE_REG		-26
 #define ALX_ERR_PHY_RESOLVED		-27
 
-#define ALX_ERR_PCIE			-40
-#define ALX_ERR_PCIE_RESET		-41
-#define ALX_ERR_PWR_SAVING		-42
-#define ALX_ERR_ASPM			-43
-#define ALX_ERR_EEPROM			-44
-#define ALX_ERR_DISABLE_DRV		-45
+#define ALX_ERR_PCIE_RESET		-40
+#define ALX_ERR_PWR_SAVING		-41
+#define ALX_ERR_ASPM			-42
+#define ALX_ERR_DISABLE_DRV		-43
+#define ALX_ERR_FLOW_CONTROL		-44
 
-#define ALX_ERR_FLOW_CONTROL		-50
-#define ALX_ERR_FC_NOT_NEGOTIATED	-51
-#define ALX_ERR_FC_NOT_SUPPORTED	-52
-
-#define ALX_ERR_INVALID_ARGUMENT	0x7FFFFFFD
 #define ALX_ERR_NOT_SUPPORTED		0x7FFFFFFE
-#define ALX_ERR_NOT_IMPLEMENTED		0x7FFFFFFF
+
+/* Logging message functions */
+#define alx_hw_err(_hw, _format, ...)				\
+	alx_hw_printk(ERR, _format, ##__VA_ARGS__)
+#ifdef DBG	
+#define alx_hw_warn(_hw, _format, ...)				\
+	alx_hw_printk(WARNING, _format, ##__VA_ARGS__)
+#define alx_hw_info(_hw, _format, ...)				\
+	alx_hw_printk(INFO, _format, ##__VA_ARGS__)
+#else
+#define alx_hw_warn(hw, fmt, ...)
+#define alx_hw_info(hw, fmt, ...)
+#endif
+
+#define alx_hw_printk(_klevel, _format, ...)		\
+	do {							\
+		printk(KERN_##_klevel "alx_hw: %s: " _format,	\
+			__func__ , ##__VA_ARGS__);		\
+	} while (0)
 
 #endif /* _ALX_SW_H_ */
 

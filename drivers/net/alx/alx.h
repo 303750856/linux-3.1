@@ -17,30 +17,7 @@
 #ifndef _ALX_H_
 #define _ALX_H_
 
-#include <linux/types.h>
-#include <linux/module.h>
-#include <linux/pci.h>
-#include <linux/netdevice.h>
-#include <linux/vmalloc.h>
-#include <linux/string.h>
-#include <linux/in.h>
-#include <linux/interrupt.h>
-#include <linux/ip.h>
-#include <linux/tcp.h>
-#include <linux/sctp.h>
-#include <linux/pkt_sched.h>
-#include <linux/ipv6.h>
-#include <linux/slab.h>
-#include <net/checksum.h>
-#include <net/ip6_checksum.h>
-#include <linux/ethtool.h>
-#include <linux/if_vlan.h>
-#include <linux/mii.h>
-
-#include <linux/bitops.h>
-#include <linux/cpumask.h>
-#include <linux/aer.h>
-
+#include "alx_compat.h"
 #include "alx_sw.h"
 
 /*
@@ -59,6 +36,8 @@
 #define CONFIG_ALX_RSS
 #endif
 
+//#define CONFIG_ALX_DIAG
+
 /*
  * Definition for validate HW
  */
@@ -74,77 +53,147 @@
  * Definition for Dumping msg
  */
 /* TPD, RRD and RFD Description */
-#define ALX_DUMP_RRD_DESC   0
-#define ALX_DUMP_RFD_DESC   0
-#define ALX_DUMP_TPD_DESC   0
+#define ALX_DUMP_RRD_DESC	0
+#define ALX_DUMP_RFD_DESC	0
+#define ALX_DUMP_TPD_DESC	0
 
-/* Definitions for printing message */
-#define ALX_MSG_LV_ERR		1
-#define ALX_MSG_LV_EMERG	1
-#define ALX_MSG_LV_WARNING	0
-#define ALX_MSG_LV_INFO		0
-#define ALX_MSG_LV_DEBUG	0
-#define ALX_MSG_PFX_NAME	"alx: "
+#define ALX_MSG_DEFAULT		0
 
-#define ALX_MSG_INIT		BIT_1 /* PCI IF part, And always print */
-#define ALX_MSG_PCI		BIT_2 /* PCI IF part, But doesn't */
-#define ALX_MSG_IF		BIT_3
-#define ALX_MSG_RX		BIT_4
-#define ALX_MSG_TX		BIT_5
-#define ALX_MSG_INTR		BIT_6
-#define ALX_MSG_HW		BIT_7
-#define ALX_MSG_WOL		BIT_8
-#define ALX_MSG_TIMER		BIT_9
-#define ALX_MSG_ETHTOOL		BIT_10
-#define ALX_MSG_IOCTL		BIT_11
-#define ALX_MSG_PARAM		BIT_12
-#define ALX_MSG_FUNC		BIT_13
 
-#define ALX_MSG_GENERAL		(\
-		ALX_MSG_INIT)
-#define ALX_MSG_ALL		(\
-		ALX_MSG_INIT	|\
-		ALX_MSG_PCI	|\
-		ALX_MSG_IF	|\
-		ALX_MSG_RX	|\
-		ALX_MSG_TX	|\
-		ALX_MSG_INTR	|\
-		ALX_MSG_HW	|\
-		ALX_MSG_WOL	|\
-		ALX_MSG_TIMER	|\
-		ALX_MSG_ETHTOOL	|\
-		ALX_MSG_IOCTL	|\
-		ALX_MSG_FUNC    |\
-		ALX_MSG_PARAM)
+/* Logging functions and macros */
+#define alx_err(_adpt, _format, ...)	\
+	alx_printk_b(_adpt, ERR, _format, ##__VA_ARGS__)
 
-#define ALX_MSG_DEFAULT		ALX_MSG_GENERAL
+#define alx_netif_info(_adpt, _mlevel, _format, ...) \
+	alx_printk_a(_adpt, _mlevel, INFO, _format, ##__VA_ARGS__)
 
-#define DRV_PRINT(_mlv, _klv, _fmt, _args...) \
-	if (ALX_MSG_LV_##_klv || (ALX_MSG_##_mlv & adpt->msg_flags)) {\
-		printk(KERN_##_klv ALX_MSG_PFX_NAME "%s: %s: " _fmt, \
-			adpt->netdev->name, __func__ , ## _args); \
-	}
+#define alx_netif_warn(_adpt, _mlevel, _format, ...) \
+	alx_printk_a(_adpt, _mlevel, WARNING, _format, ##__VA_ARGS__)
+
+#define alx_netif_dbg(_adpt, _mlevel, _format, ...) \
+	alx_printk_a(_adpt, _mlevel, DEBUG, _format, ##__VA_ARGS__)
+
+
+#define alx_printk_a(_adpt, _mlevel, _klevel, _format, ...)		\
+	do {								\
+		if (_adpt->msg_enable & NETIF_MSG_##_mlevel)		\
+			printk(KERN_##_klevel "alx: %s: %s: " _format,	\
+				_adpt->netdev->name,			\
+				__func__ , ##__VA_ARGS__);		\
+	} while (0)
+
+
+#define alx_printk_b(_adpt, _klevel, _format, ...)			\
+	do {								\
+		printk(KERN_##_klevel "alx: %s: %s: " _format,		\
+			_adpt->netdev->name, __func__ , ##__VA_ARGS__); \
+	} while (0)
 
 /*
  * Definitions for ioctl
  *
- * redefine them as alx own ioctl vector
+ * redefine them as alx ioctl vector of our own
  */
-#define SIOCDEVGMACREG	0x89F0	/* Read MAC Register */
-#define SIOCDEVSMACREG	0x89F1	/* Write MAC Register */
-/* This structure is used in all SIOCxMIIxxx ioctl calls */
-struct mac_ioctl_data {
-	__u32	reg_num;
-	__u32	reg_val;
+#define SIOCDEVEXTCOMMAND  0x89F0 /* command of device */
+struct ext_command_data {
+	void  *buf;
+	__u32 size;
 };
 
-#if ALX_VALID_RSS
-#define SIOCDEVVALIDRSS 0x89FA
-struct valid_rss_ioctl_data {
-	__u16	cmd_id;
-	__u16	tbl_idx;
-	__u16	tbl_val;
-}
+struct ext_command_mac {
+	__u32  num;
+	union {
+		__u32  val32;
+		__u16  val16;
+		__u8   val8;
+	};
+};
+
+struct ext_command_mii {
+	__u16  dev;
+	__u16  num;
+	__u16  val;
+};
+
+struct ext_command_rss {
+	__u32  num;
+	__u32  val;
+};
+
+struct ext_ioctl_data {
+	__u32	cmd_type;
+	union {
+		struct ext_command_data cmdu_data;
+		struct ext_command_mac  cmdu_mac;
+		struct ext_command_mii  cmdu_mii;
+		struct ext_command_rss  cmdu_rss;
+	} cmd_cmdu;
+};
+
+#define cmd_data  cmd_cmdu.cmdu_data
+#define cmd_mac   cmd_cmdu.cmdu_mac
+#define cmd_mii   cmd_cmdu.cmdu_mii
+#define cmd_rss   cmd_cmdu.cmdu_rss
+
+#define ALX_IOCTL_EXT_DEV_INACTIVE	0x1
+#define ALX_IOCTL_EXT_DEV_RESET		0x2
+
+#define ALX_IOCTL_EXT_GMAC_REG_32	0x3
+#define ALX_IOCTL_EXT_SMAC_REG_32	0x4
+#define ALX_IOCTL_EXT_GMAC_REG_16	0x5
+#define ALX_IOCTL_EXT_SMAC_REG_16	0x6
+#define ALX_IOCTL_EXT_GMAC_REG_8	0x7
+#define ALX_IOCTL_EXT_SMAC_REG_8	0x8
+
+#define ALX_IOCTL_EXT_GMAC_CFG_32	0x9
+#define ALX_IOCTL_EXT_SMAC_CFG_32	0x10
+#define ALX_IOCTL_EXT_GMAC_IO_32	0x11
+#define ALX_IOCTL_EXT_SMAC_IO_32	0x12
+
+#define ALX_IOCTL_EXT_GMII_EXT_REG	0x13
+#define ALX_IOCTL_EXT_SMII_EXT_REG	0x14
+
+#define ALX_IOCTL_EXT_GRSS_KEY_32	0x15
+#define ALX_IOCTL_EXT_SRSS_KEY_32	0x16
+#define ALX_IOCTL_EXT_GRSS_TAB_32	0x17
+#define ALX_IOCTL_EXT_SRSS_TAB_32	0x18
+#define ALX_IOCTL_EXT_RSS_UPDATE	0x19
+
+#define ALX_IOCTL_EXT_SEND_PKTS		0x20
+#define ALX_IOCTL_EXT_RECV_PKTS		0x21
+
+
+#ifdef CONFIG_ALX_DIAG
+
+#define ALX_DIAG_MAX_PACKET_BUFS	1
+#define ALX_DIAG_MAX_PACKETS		60
+
+struct alx_diag_buf {
+    u8* addr;
+    u32 offset;
+    u32 length;
+};
+
+struct alx_diag_packet {
+    struct alx_diag_packet *next;                           
+    u32                    length;  /* total length of the packet(buffers) */
+    u32                    type;    /* packet type, vlan, ip checksum, TSO */
+
+    struct alx_diag_buf    buf[ALX_DIAG_MAX_PACKET_BUFS];                                                           
+    struct alx_diag_buf    sglist[ALX_DIAG_MAX_PACKET_BUFS];                                                            
+    u16                    vlanid;                                                         
+    u16                    mss;                                                            
+    u32                    hash;                                                           
+    u16                    cpu_num;                                                         
+    u16                    xsum;         /* rx, ip-payload checksum */
+    u16                    csum_start;   /* custom checksum offset to the 
+    					  * mac-header */
+    u16                    csum_pos;     /* custom checksom position
+    					  * (to the mac_header) */                                          
+    u32                    uplevel_reserved[4];                                                         
+    void*                  lowlevel_reserved[4];                                                            
+};
+
 #endif
 
 /* TODO: refine */
@@ -562,8 +611,15 @@ struct alx_msix_param {
 	u8 rx_count;     /* Rx ring count assigned to this vector */
 	u8 tx_count;     /* Tx ring count assigned to this vector */
 
+#ifdef CONFIG_ALX_NAPI
 	struct napi_struct napi;
+#endif
+#ifndef HAVE_NETDEV_NAPI_LIST
+	struct net_device poll_dev;
+#endif
+#ifdef HAVE_IRQ_AFFINITY_HINT
 	cpumask_var_t affinity_mask;
+#endif
 	u32 flags;
 };
 
@@ -619,7 +675,9 @@ struct alx_adapter {
 	struct net_device_stats net_stats;
 	bool netdev_registered;
 
+#ifdef NETIF_F_HW_VLAN_TX
 	struct vlan_group   *vlgrp;
+#endif
 	u16 bd_number;    /* board number;*/
 
 	struct alx_msix_param *msix[ALX_MAX_MSIX_INTRS];
@@ -659,7 +717,9 @@ struct alx_adapter {
 	/* structs defined in alx_hw.h */
 	struct alx_hw       hw;
 	struct alx_hw_stats hw_stats;
-
+#ifdef CONFIG_ALX_DIAG
+	char *diag_buf;
+#endif
 	u32 *config_space;
 
 	struct work_struct alx_task;
@@ -673,7 +733,7 @@ struct alx_adapter {
 	spinlock_t rx_lock;
 	atomic_t irq_sem;
 
-	u16 msg_flags;
+	u16 msg_enable;
 	u32 flags[2];
 };
 
@@ -721,6 +781,13 @@ enum alx_state_t {
 
 #define ALX_OPEN_CTRL_IRQ_EN	BIT_0
 #define ALX_OPEN_CTRL_MAC_EN	BIT_1
+
+
+
+
+
+/* needed by alx_main.c */
+extern void alx_get_user_settings(struct alx_adapter *adpt);
 
 /* needed by alx_ethtool.c */
 extern char alx_drv_name[];
