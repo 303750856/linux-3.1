@@ -84,7 +84,7 @@ intel_pch_panel_fitting(struct drm_device *dev,
 			if (scaled_width > scaled_height) { /* pillar */
 				width = scaled_height / mode->vdisplay;
 				if (width & 1)
-				    	width++;
+					width++;
 				x = (adjusted_mode->hdisplay - width + 1) / 2;
 				y = 0;
 				height = adjusted_mode->vdisplay;
@@ -206,7 +206,7 @@ u32 intel_panel_get_backlight(struct drm_device *dev)
 		if (IS_PINEVIEW(dev))
 			val >>= 1;
 
-		if (is_backlight_combination_mode(dev)){
+		if (is_backlight_combination_mode(dev)) {
 			u8 lbpc;
 
 			val &= ~1;
@@ -236,7 +236,7 @@ static void intel_panel_actually_set_backlight(struct drm_device *dev, u32 level
 	if (HAS_PCH_SPLIT(dev))
 		return intel_pch_panel_set_backlight(dev, level);
 
-	if (is_backlight_combination_mode(dev)){
+	if (is_backlight_combination_mode(dev)) {
 		u32 max = intel_panel_get_max_backlight(dev);
 		u8 lbpc;
 
@@ -326,7 +326,8 @@ static int intel_panel_update_status(struct backlight_device *bd)
 static int intel_panel_get_brightness(struct backlight_device *bd)
 {
 	struct drm_device *dev = bl_get_data(bd);
-	return intel_panel_get_backlight(dev);
+	struct drm_i915_private *dev_priv = dev->dev_private;
+	return dev_priv->backlight_level;
 }
 
 static const struct backlight_ops intel_panel_bl_ops = {
