@@ -405,7 +405,8 @@ int dmar_disabled = 0;
 int dmar_disabled = 1;
 #endif /*CONFIG_INTEL_IOMMU_DEFAULT_ON*/
 
-static int dmar_map_gfx = 1;
+/* disabled by default; causes way too many issues */
+static int dmar_map_gfx = 0;
 static int dmar_forcedac;
 static int intel_iommu_strict;
 static int intel_iommu_superpage = 1;
@@ -430,10 +431,10 @@ static int __init intel_iommu_setup(char *str)
 		} else if (!strncmp(str, "off", 3)) {
 			dmar_disabled = 1;
 			printk(KERN_INFO "Intel-IOMMU: disabled\n");
-		} else if (!strncmp(str, "igfx_off", 8)) {
-			dmar_map_gfx = 0;
+		} else if (!strncmp(str, "igfx_on", 7)) {
+			dmar_map_gfx = 1;
 			printk(KERN_INFO
-				"Intel-IOMMU: disable GFX device mapping\n");
+				"Intel-IOMMU: enabled GFX device mapping\n");
 		} else if (!strncmp(str, "forcedac", 8)) {
 			printk(KERN_INFO
 				"Intel-IOMMU: Forcing DAC for PCI devices\n");
@@ -4119,6 +4120,16 @@ DECLARE_PCI_FIXUP_HEADER(PCI_VENDOR_ID_INTEL, 0x0040, quirk_calpella_no_shadow_g
 DECLARE_PCI_FIXUP_HEADER(PCI_VENDOR_ID_INTEL, 0x0044, quirk_calpella_no_shadow_gtt);
 DECLARE_PCI_FIXUP_HEADER(PCI_VENDOR_ID_INTEL, 0x0062, quirk_calpella_no_shadow_gtt);
 DECLARE_PCI_FIXUP_HEADER(PCI_VENDOR_ID_INTEL, 0x006a, quirk_calpella_no_shadow_gtt);
+
+/* https://bugzilla.redhat.com/show_bug.cgi?id=605888 */
+static void __devinit quirk_ricoh_multifunction(struct pci_dev *dev)
+{
+	dmar_disabled = 1;
+}
+DECLARE_PCI_FIXUP_HEADER(0x1180, 0xe822, quirk_ricoh_multifunction);
+DECLARE_PCI_FIXUP_HEADER(0x1180, 0xe230, quirk_ricoh_multifunction);
+DECLARE_PCI_FIXUP_HEADER(0x1180, 0xe832, quirk_ricoh_multifunction);
+DECLARE_PCI_FIXUP_HEADER(0x1180, 0xe476, quirk_ricoh_multifunction);
 
 /* On Tylersburg chipsets, some BIOSes have been known to enable the
    ISOCH DMAR unit for the Azalia sound device, but not give it any

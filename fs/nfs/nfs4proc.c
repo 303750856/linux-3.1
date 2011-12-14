@@ -53,6 +53,7 @@
 #include <linux/sunrpc/bc_xprt.h>
 #include <linux/xattr.h>
 #include <linux/utsname.h>
+#include <linux/freezer.h>
 
 #include "nfs4_fs.h"
 #include "delegation.h"
@@ -241,7 +242,7 @@ static int nfs4_delay(struct rpc_clnt *clnt, long *timeout)
 		*timeout = NFS4_POLL_RETRY_MIN;
 	if (*timeout > NFS4_POLL_RETRY_MAX)
 		*timeout = NFS4_POLL_RETRY_MAX;
-	schedule_timeout_killable(*timeout);
+	freezable_schedule_timeout_killable(*timeout);
 	if (fatal_signal_pending(current))
 		res = -ERESTARTSYS;
 	*timeout <<= 1;
@@ -3485,6 +3486,22 @@ static void nfs4_zap_acl_attr(struct inode *inode)
 	nfs4_set_cached_acl(inode, NULL);
 }
 
+/*
+ * The bitmap xdr length, bitmasks, and the attr xdr length are stored in
+ * the acl cache to handle variable length bitmasks. Just copy the acl data.
+ */
+static void nfs4_copy_acl(char *buf, char *acl_data, size_t acl_len)
+{
+	__be32 *q, *p = (__be32 *)acl_data;
+	int32_t len;
+
+	len = be32_to_cpup(p); /* number of bitmasks */
+	len += 2;  /* add words for bitmap and attr xdr len */
+	q = p + len;
+	len = len << 2; /* convert to bytes for acl_len math */
+	memcpy(buf, (char *)q, acl_len - len);
+}
+
 static inline ssize_t nfs4_read_cached_acl(struct inode *inode, char *buf, size_t buflen)
 {
 	struct nfs_inode *nfsi = NFS_I(inode);
@@ -3502,7 +3519,7 @@ static inline ssize_t nfs4_read_cached_acl(struct inode *inode, char *buf, size_
 	ret = -ERANGE; /* see getxattr(2) man page */
 	if (acl->len > buflen)
 		goto out;
-	memcpy(buf, acl->data, acl->len);
+	nfs4_copy_acl(buf, acl->data, acl->len);
 out_len:
 	ret = acl->len;
 out:
@@ -3577,7 +3594,7 @@ static ssize_t __nfs4_get_acl_uncached(struct inode *inode, void *buf, size_t bu
 		if (res.acl_len > buflen)
 			goto out_free;
 		if (localpage)
-			memcpy(buf, resp_buf, res.acl_len);
+			nfs4_copy_acl(buf, resp_buf, res.acl_len);
 	}
 	ret = res.acl_len;
 out_free:
@@ -3950,7 +3967,7 @@ int nfs4_proc_delegreturn(struct inode *inode, struct rpc_cred *cred, const nfs4
 static unsigned long
 nfs4_set_lock_task_retry(unsigned long timeout)
 {
-	schedule_timeout_killable(timeout);
+	freezable_schedule_timeout_killable(timeout);
 	timeout <<= 1;
 	if (timeout > NFS4_LOCK_MAXTIMEOUT)
 		return NFS4_LOCK_MAXTIMEOUT;

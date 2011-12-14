@@ -185,6 +185,7 @@ config ACPI_PROCESSOR
 	tristate "Processor"
 	select THERMAL
 	select CPU_IDLE
+	select CPU_FREQ_TABLE
 	default y
 	help
 	  This driver installs ACPI as the idle handler for Linux and uses

@@ -104,6 +104,10 @@
 
 #define PT_TRACE_MASK	0x000003f4
 
+#define PT_SYSCALL_TRACE	0x00020000
+#define PT_SINGLE_STEP		0x00040000
+#define PT_SINGLE_BLOCK		0x00080000
+
 /* single stepping state bits (used on ARM and PA-RISC) */
 #define PT_SINGLESTEP_BIT	31
 #define PT_SINGLESTEP		(1<<PT_SINGLESTEP_BIT)
@@ -113,6 +117,7 @@
 #include <linux/compiler.h>		/* For unlikely.  */
 #include <linux/sched.h>		/* For struct task_struct.  */
 
+extern void ptrace_signal_wake_up(struct task_struct *p, int quiescent);
 
 extern long arch_ptrace(struct task_struct *child, long request,
 			unsigned long addr, unsigned long data);
@@ -226,6 +231,8 @@ static inline void ptrace_init_task(struct task_struct *child, bool ptrace)
 
 	if (unlikely(ptrace) && current->ptrace) {
 		child->ptrace = current->ptrace;
+		child->ptrace &=
+			~(PT_SYSCALL_TRACE | PT_SINGLE_STEP | PT_SINGLE_BLOCK);
 		__ptrace_link(child, current->parent);
 
 		if (child->ptrace & PT_SEIZED)

@@ -1,4 +1,4 @@
-/*
+/* 
  *  Acer WMI Laptop Extras
  *
  *  Copyright (C) 2007-2009	Carlos Corbacho <carlos@strangeworlds.co.uk>
@@ -22,8 +22,6 @@
  *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
 
-#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
-
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/init.h>
@@ -38,15 +36,52 @@
 #include <linux/rfkill.h>
 #include <linux/workqueue.h>
 #include <linux/debugfs.h>
-#include <linux/slab.h>
-#include <linux/input.h>
-#include <linux/input/sparse-keymap.h>
 
 #include <acpi/acpi_drivers.h>
+#define ACER_WMI_DEBUG 0
+/********tomsun 2010-02-06*********/
+#ifndef NETLINK_ACER
+	#define NETLINK_ACER 20
+#endif
+#include  <net/sock.h>
+#include  <linux/netlink.h>
+#include  <linux/proc_fs.h>
+#include  <linux/list.h>
+#include  <linux/skbuff.h>
+#include  <linux/moduleparam.h>
+#include  <linux/connector.h>
+#include  <linux/mutex.h>
+#include  <linux/spinlock.h>
+#include  <linux/kobject.h>
+#include  <linux/sysfs.h>
+
+/***************end****************/
+
 
 MODULE_AUTHOR("Carlos Corbacho");
 MODULE_DESCRIPTION("Acer Laptop WMI Extras Driver");
 MODULE_LICENSE("GPL");
+
+#define ACER_LOGPREFIX "acer-wmi: "
+#define ACER_ERR KERN_ERR ACER_LOGPREFIX
+#define ACER_NOTICE KERN_NOTICE ACER_LOGPREFIX
+#define ACER_INFO KERN_INFO ACER_LOGPREFIX
+
+/*
+ * The following defines quirks to get some specific functions to work
+ * which are known to not be supported over ACPI-WMI (such as the mail LED
+ * on WMID based Acer's)
+ */
+/******tomsun 2010-02-06*********/
+#define MAX_PAYLOAD 1024
+static struct sock *acer_sock_user;
+//static DEFINE_SPINLOCK (acer_lock);
+/***************end*************/
+struct acer_quirks {
+	const char *vendor;
+	const char *model;
+	u16 quirks;
+};
 
 /*
  * Magic Number
@@ -75,103 +110,83 @@ MODULE_LICENSE("GPL");
 #define ACER_WMID_SET_THREEG_METHODID		11
 
 /*
+ * Method IDS for WMID_GUID4 function provider
+ * @leon added
+ */
+#define ACER_WMID_HOTKEY_SET_FUNCTION_METHODID	1
+#define ACER_WMID_HOTKEY_GET_FUNCTION_METHODID	2
+
+/*
+ * Error Code
+ * @leon added
+ */
+#define ACER_ERROR_CODE_NO_ERROR		0x00
+#define ACER_ERROR_CODE_FUNCTION_NOT_SUPPORT	0xE1
+#define ACER_ERROR_CODE_UNDEFINED_DEVICE	0xE2
+#define ACER_ERROR_CODE_EC_NO_RESPONSE		0xE3
+#define ACER_ERROR_CODE_INVALID_PARAMETER	0xE4
+
+/*
+ * EC Return Value
+ * @leon added
+ */
+#define ACER_EC_RETURN_VALUE_NO_ERROR		0x00
+
+
+/*
  * Acer ACPI method GUIDs
  */
 #define AMW0_GUID1		"67C3371D-95A3-4C37-BB61-DD47B491DAAB"
 #define AMW0_GUID2		"431F16ED-0C2B-444C-B267-27DEB140CF9C"
-#define WMID_GUID1		"6AF4F258-B401-42FD-BE91-3D4AC2D7C0D3"
-#define WMID_GUID2		"95764E09-FB56-4E83-B31A-37761F60994A"
-#define WMID_GUID3		"61EF69EA-865C-4BC3-A502-A0DEBA0CB531"
 
-/*
- * Acer ACPI event GUIDs
- */
-#define ACERWMID_EVENT_GUID "676AA15E-6A47-4D9F-A2CC-1E6D18D14026"
+// GUID 6AF4F258-B401-42fd-BE91-3D4AC2D7C0D3
+// ACPI Method for Device Control
+// 
+// 0x58,0xF2,0xF4,0x6A,0x01,0xB4,0xfd,0x42,0xBE,0x91,0x3D,0x4A,0xC2,0xD7,0xC0,0xD3
+// 66, 65					// Object ID BA
+// 1,						// Instance count
+// 0x02						// Flags (Data)
+#define WMID_GUID1		"6AF4F258-B401-42fd-BE91-3D4AC2D7C0D3"	
+
+// GUID 95764E09-FB56-4e83-B31A-37761F60994A
+// ACPI Data Block for EC Device
+//
+// 0x09,0x4E,0x76,0x96,0x56,0xFB,0x83,0x4e,0xB3,0x1A,0x37,0x76,0x1F,0x60,0x99,0x4A
+// 65, 65					// Object ID AA
+// 1						// Instance count
+// 0x01						// Flags (Data)
+#define WMID_GUID2		"95764E09-FB56-4e83-B31A-37761F60994A"
+
+// GUID 676AA15E-6A47-4D9F-A2CC-1E6D18D14026
+// Event - Hotkey
+//
+// 0x5E,0xA1,0x6A,0x67,0x47,0x6A,0x9F,0x4D,0xA2,0xCC,0x1E,0x6D,0x18,0xD1,0x40,0x26
+// 66, 67					// Object ID BC
+// 0						// Instance count
+// 0x08						// Flags (Event)
+#define WMID_GUID3		"676AA15E-6A47-4D9F-A2CC-1E6D18D14026"
+
+// GUID 61EF69EA-865C-4BC3-A502-A0DEBA0CB531
+// Method - Control Device Map
+//
+// 0xEA,0x69,0xEF,0x61,0x5C,0x86,0xC3,0x4B,0xA5,0x02,0xA0,0xDE,0xBA,0x0C,0xB5,0x31 
+// 65,65					// Object ID AA
+// 1						// Instance count
+// 0x02						// Flags (Data)
+#define WMID_GUID4		"61EF69EA-865C-4BC3-A502-A0DEBA0CB531"	
 
 MODULE_ALIAS("wmi:67C3371D-95A3-4C37-BB61-DD47B491DAAB");
-MODULE_ALIAS("wmi:6AF4F258-B401-42FD-BE91-3D4AC2D7C0D3");
-MODULE_ALIAS("wmi:676AA15E-6A47-4D9F-A2CC-1E6D18D14026");
+MODULE_ALIAS("wmi:6AF4F258-B401-42fd-BE91-3D4AC2D7C0D3");
 
-enum acer_wmi_event_ids {
-	WMID_HOTKEY_EVENT = 0x1,
-};
+// leon added for WMID_GUID2,WMID_GUID3,WMID_GUID4 --
+//MODULE_ALIAS("wmi:95764E09-FB56-4e83-B31A-37761F60994A");
+//MODULE_ALIAS("wmi:676AA15E-6A47-4D9F-A2CC-1E6D18D14026");
+//MODULE_ALIAS("wmi:61EF69EA-865C-4BC3-A502-A0DEBA0CB531");
+// --
 
-static const struct key_entry acer_wmi_keymap[] = {
-	{KE_KEY, 0x01, {KEY_WLAN} },     /* WiFi */
-	{KE_KEY, 0x03, {KEY_WLAN} },     /* WiFi */
-	{KE_KEY, 0x04, {KEY_WLAN} },     /* WiFi */
-	{KE_KEY, 0x12, {KEY_BLUETOOTH} },	/* BT */
-	{KE_KEY, 0x21, {KEY_PROG1} },    /* Backup */
-	{KE_KEY, 0x22, {KEY_PROG2} },    /* Arcade */
-	{KE_KEY, 0x23, {KEY_PROG3} },    /* P_Key */
-	{KE_KEY, 0x24, {KEY_PROG4} },    /* Social networking_Key */
-	{KE_IGNORE, 0x41, {KEY_MUTE} },
-	{KE_IGNORE, 0x42, {KEY_PREVIOUSSONG} },
-	{KE_IGNORE, 0x43, {KEY_NEXTSONG} },
-	{KE_IGNORE, 0x44, {KEY_PLAYPAUSE} },
-	{KE_IGNORE, 0x45, {KEY_STOP} },
-	{KE_IGNORE, 0x48, {KEY_VOLUMEUP} },
-	{KE_IGNORE, 0x49, {KEY_VOLUMEDOWN} },
-	{KE_IGNORE, 0x61, {KEY_SWITCHVIDEOMODE} },
-	{KE_IGNORE, 0x62, {KEY_BRIGHTNESSUP} },
-	{KE_IGNORE, 0x63, {KEY_BRIGHTNESSDOWN} },
-	{KE_KEY, 0x64, {KEY_SWITCHVIDEOMODE} },	/* Display Switch */
-	{KE_IGNORE, 0x81, {KEY_SLEEP} },
-	{KE_KEY, 0x82, {KEY_TOUCHPAD_TOGGLE} },	/* Touch Pad On/Off */
-	{KE_IGNORE, 0x83, {KEY_TOUCHPAD_TOGGLE} },
-	{KE_END, 0}
-};
-
-static struct input_dev *acer_wmi_input_dev;
-
-struct event_return_value {
-	u8 function;
-	u8 key_num;
-	u16 device_state;
-	u32 reserved;
-} __attribute__((packed));
-
-/*
- * GUID3 Get Device Status device flags
- */
-#define ACER_WMID3_GDS_WIRELESS		(1<<0)	/* WiFi */
-#define ACER_WMID3_GDS_THREEG		(1<<6)	/* 3G */
-#define ACER_WMID3_GDS_WIMAX		(1<<7)	/* WiMAX */
-#define ACER_WMID3_GDS_BLUETOOTH	(1<<11)	/* BT */
-
-struct lm_input_params {
-	u8 function_num;        /* Function Number */
-	u16 commun_devices;     /* Communication type devices default status */
-	u16 devices;            /* Other type devices default status */
-	u8 lm_status;           /* Launch Manager Status */
-	u16 reserved;
-} __attribute__((packed));
-
-struct lm_return_value {
-	u8 error_code;          /* Error Code */
-	u8 ec_return_value;     /* EC Return Value */
-	u16 reserved;
-} __attribute__((packed));
-
-struct wmid3_gds_input_param {	/* Get Device Status input parameter */
-	u8 function_num;	/* Function Number */
-	u8 hotkey_number;	/* Hotkey Number */
-	u16 devices;		/* Get Device */
-} __attribute__((packed));
-
-struct wmid3_gds_return_value {	/* Get Device Status return value*/
-	u8 error_code;		/* Error Code */
-	u8 ec_return_value;	/* EC Return Value */
-	u16 devices;		/* Current Device Status */
-	u32 reserved;
-} __attribute__((packed));
-
-struct hotkey_function_type_aa {
-	u8 type;
-	u8 length;
-	u16 handle;
-	u16 commun_func_bitmap;
-} __attribute__((packed));
+/* Temporary workaround until the WMI sysfs interface goes in */
+// leon marked for following 2.6.33-rc4 "acer-wmi.c"
+MODULE_ALIAS("dmi:*:*Acer*:*:");
 
 /*
  * Interface capability flags
@@ -190,7 +205,6 @@ enum interface_flags {
 	ACER_AMW0,
 	ACER_AMW0_V2,
 	ACER_WMID,
-	ACER_WMID_v2,
 };
 
 #define ACER_DEFAULT_WIRELESS  0
@@ -204,20 +218,54 @@ static int mailled = -1;
 static int brightness = -1;
 static int threeg = -1;
 static int force_series;
-static bool ec_raw_mode;
-static bool has_type_aa;
-static u16 commun_func_bitmap;
+
 
 module_param(mailled, int, 0444);
 module_param(brightness, int, 0444);
 module_param(threeg, int, 0444);
 module_param(force_series, int, 0444);
-module_param(ec_raw_mode, bool, 0444);
 MODULE_PARM_DESC(mailled, "Set initial state of Mail LED");
 MODULE_PARM_DESC(brightness, "Set initial LCD backlight brightness");
 MODULE_PARM_DESC(threeg, "Set initial state of 3G hardware");
 MODULE_PARM_DESC(force_series, "Force a different laptop series");
-MODULE_PARM_DESC(ec_raw_mode, "Enable EC raw mode");
+
+
+/*added by tomsun 2010-02-05*/
+static char *wmi_default="wmi_default=no";
+module_param(wmi_default, charp, 0444);
+MODULE_PARM_DESC(wmi_default, "wmi_default=yes or wmi_default=no");
+struct acer_function_map
+{
+	u8 button_number;
+	u8 key_type;
+	u16 function_map;
+};
+
+struct acer_hotkey_function_data
+{
+	struct dmi_header header;
+	u16 support_1;
+	u16 support_2;
+	u16 support_3;
+	u16 support_4;
+	u16 support_5;
+	struct acer_function_map hotkey_function[];
+};
+
+static u16  commu_status = 0;
+static u16  commu_devices = 0;
+static u16 device_enable = 1;
+
+struct acer_function_map *hotkey_button;
+static int hotkey_num;
+static  void parse_acer_table (const struct dmi_header *dm);
+static void find_hotkeys (const struct dmi_header *dm, void *dummy);
+static u16  wmi_get_hotkey_map(u8 keynumber);
+static void acer_wmi_get_device_status (u8 hotkey_number, u16 function_bit);
+static u8  commu_keynumber;
+static u8  wmi_get_commu_keynumber(void);
+/***********end**************/
+
 
 struct acer_data {
 	int mailled;
@@ -233,8 +281,6 @@ struct acer_debug {
 
 static struct rfkill *wireless_rfkill;
 static struct rfkill *bluetooth_rfkill;
-static struct rfkill *threeg_rfkill;
-static bool rfkill_inited;
 
 /* Each low-level interface must define at least some of the following */
 struct wmi_interface {
@@ -269,6 +315,177 @@ struct quirk_entry {
 
 static struct quirk_entry *quirks;
 
+/*
+ * leon added for Generate Hotkey Event of WMID_GUID3
+ */
+struct acer_wmi_hotkey_generate_hotkey_event_return_value {
+	u8 function_number;	// function number (0x1): Hotkey Event
+	u8 key_number;		// refer to button number of SMBIOS definition
+	u16 device_status;	// refer to function bitmap of SMBIOS definition
+	u8 reserved_1;
+	u8 reserved_2;
+	u8 reserved_3;
+	u8 reserved_4;
+};
+
+struct acer_wmi_hotkey_hotkey_break_event_return_value {
+	u8 function_number;	// function number (0x2): Hotkey Break Event
+	u8 key_number;		// refer to button number of SMBIOS definition
+	u8 reserved_1;
+	u8 reserved_2;
+	u8 reserved_3;
+	u8 reserved_4;
+	u8 reserved_5;
+	u8 reserved_6;
+};
+
+/*
+ * leon added for SetFunction of WMID_GUID4
+ */
+struct acer_wmi_hotkey_set_function1_input_arg2 {
+	u8 function_number;
+	u16 communication_status;
+	u16 other_status;
+	u8 launch_manager_status;
+	u8 reserved_1;
+	u8 reserved_2;
+};
+
+struct acer_wmi_hotkey_set_function1_return_value {
+	u8 error_code;
+	u8 ec_return;
+	u8 reserved_1;
+	u8 reserved_2;
+};
+
+struct acer_wmi_hotkey_set_function2_input_arg2 {
+	u8 function_number;
+	u8 hotkey_number;
+	u16 next_device;		// refer to control device map fot bit definition
+	u8 reserved_1;
+	u8 reserved_2;
+	u8 reserved_3;
+};
+
+struct acer_wmi_hotkey_set_function2_return_value {
+	u8 error_code;
+	u8 ec_return;
+	u8 reserved_1;
+	u8 reserved_2;
+};
+
+/*
+ * leon added for GetFunction of WMID_GUID4
+ */
+struct acer_wmi_hotkey_get_function1_input_arg2 {
+	u8 function_number;
+	u8 hotkey_number;
+	u16 function_bit;
+};
+
+struct acer_wmi_hotkey_get_function1_return_value {
+	u8 error_code;
+	u8 ec_return;
+	u16 device_status;
+	u8 reserved_1;
+	u8 reserved_2;
+	u8 reserved_3;
+	u8 reserved_4;
+};
+/*********2011-03-23*******/
+static acpi_status
+acer_wmi_hotkey_set_function2(u32 method_id,
+                              struct acer_wmi_hotkey_set_function2_input_arg2 in,
+                              struct acer_wmi_hotkey_set_function2_return_value *out);
+
+static ssize_t devices_read(struct kobject *kobj, struct kobj_attribute *attr,
+                                char* buf)
+{
+        return sprintf(buf, "0x%04x\n", commu_devices);
+}
+
+static struct kobj_attribute devices_attribute =
+        __ATTR(devices, 0444, devices_read, NULL);
+
+
+static size_t status_read(struct kobject *kobj, struct kobj_attribute *attr,
+			 	char *buf)
+{
+	return sprintf(buf, "0x%04x\n", commu_status);
+}
+
+static struct kobj_attribute status_attribute =
+	__ATTR(status, 0444, status_read, NULL);
+
+static size_t enable_read(struct kobject* kobj, struct kobj_attribute *attr, 
+				char* buf)
+{
+	return sprintf(buf, "0x%04x\n", device_enable);
+}
+
+static size_t enable_write(struct kobject* kobj, struct kobj_attribute *attr,
+				const char* buf, size_t count)
+{
+	sscanf(buf, "%x\n", &device_enable);
+	struct acer_wmi_hotkey_set_function2_return_value result;
+	struct acer_wmi_hotkey_set_function2_input_arg2 arg2 = {
+		.function_number = 0x2,
+		.hotkey_number = commu_keynumber,
+		.next_device = device_enable,
+	};
+	acer_wmi_hotkey_set_function2(ACER_WMID_HOTKEY_SET_FUNCTION_METHODID, arg2, &result);
+	acer_wmi_get_device_status (commu_keynumber, device_enable);		
+	return count;
+}
+
+static struct kobj_attribute enable_attribute =
+	__ATTR(enable, 0666, enable_read, enable_write);
+
+
+static struct attribute *attrs[] = {
+        &devices_attribute.attr,
+	&status_attribute.attr,
+	&enable_attribute.attr,
+        NULL,
+};
+
+static struct attribute_group commu_attr_group =
+{
+        .attrs = attrs,
+};
+
+static struct kobject *comm_kobj;
+/***********end************/
+
+/********added by tomsun 2010-02-05********/
+static u16  wmi_get_hotkey_map(u8 key)
+{
+	int i;
+	for (i = 0; i < hotkey_num; i++)
+	{
+		if (hotkey_button[i].button_number == key)
+		{
+			return hotkey_button[i].function_map;
+		}
+	}
+	return 0;
+}
+
+static u8 wmi_get_commu_keynumber(void)
+{
+	int i;
+	for (i = 0; i < hotkey_num; i++)
+	{
+		if (hotkey_button[i].button_number >= 0x01 && hotkey_button[i].button_number <= 0x1f){	
+			if (hotkey_button[i].function_map & 0x0841)
+				return hotkey_button[i].button_number;
+		}
+	}
+	return  0;
+}
+
+/*******************end*****************/
+
 static void set_quirks(void)
 {
 	if (!interface)
@@ -284,7 +501,7 @@ static void set_quirks(void)
 static int dmi_matched(const struct dmi_system_id *dmi)
 {
 	quirks = dmi->driver_data;
-	return 1;
+	return 0;
 }
 
 static struct quirk_entry quirk_unknown = {
@@ -305,10 +522,6 @@ static struct quirk_entry quirk_medion_md_98300 = {
 
 static struct quirk_entry quirk_fujitsu_amilo_li_1718 = {
 	.wireless = 2,
-};
-
-static struct quirk_entry quirk_lenovo_ideapad_s205 = {
-	.wireless = 3,
 };
 
 /* The Aspire One has a dummy ACPI-WMI interface - disable it */
@@ -457,24 +670,6 @@ static struct dmi_system_id acer_quirks[] = {
 		},
 		.driver_data = &quirk_medion_md_98300,
 	},
-	{
-		.callback = dmi_matched,
-		.ident = "Lenovo Ideapad S205",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "LENOVO"),
-			DMI_MATCH(DMI_PRODUCT_NAME, "10382LG"),
-		},
-		.driver_data = &quirk_lenovo_ideapad_s205,
-	},
-	{
-		.callback = dmi_matched,
-		.ident = "Lenovo 3000 N200",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "LENOVO"),
-			DMI_MATCH(DMI_PRODUCT_NAME, "0687A31"),
-		},
-		.driver_data = &quirk_fujitsu_amilo_li_1718,
-	},
 	{}
 };
 
@@ -482,14 +677,26 @@ static struct dmi_system_id acer_quirks[] = {
 static void find_quirks(void)
 {
 	if (!force_series) {
+		// leon added --
+		//printk(ACER_INFO "leon-debug: [find_quirks]dmi_check_system(acer_quirks)\n");
+		// --
 		dmi_check_system(acer_quirks);
 	} else if (force_series == 2490) {
+		// leon added --
+		//printk(ACER_INFO "leon-debug: [find_quirks]quirks = &quirk_acerr_travelmate_2490\n");
+		// --
 		quirks = &quirk_acer_travelmate_2490;
 	}
 
-	if (quirks == NULL)
+	if (quirks == NULL) {
+		// leon added --
+		//printk(ACER_INFO "leon-debug: [find_quirks]quirks = &quirk_unknown\n");
+		// --
 		quirks = &quirk_unknown;
-
+	}
+	// leon added --
+	//printk(ACER_INFO "leon-debug: [find_quirks]set_quirks()\n");
+	// --
 	set_quirks();
 }
 
@@ -563,12 +770,6 @@ struct wmi_interface *iface)
 			return AE_OK;
 		case 2:
 			err = ec_read(0x71, &result);
-			if (err)
-				return AE_ERROR;
-			*value = result & 0x1;
-			return AE_OK;
-		case 3:
-			err = ec_read(0x78, &result);
 			if (err)
 				return AE_ERROR;
 			*value = result & 0x1;
@@ -667,7 +868,6 @@ static acpi_status AMW0_find_mailled(void)
 	obj->buffer.length == sizeof(struct wmab_ret)) {
 		ret = *((struct wmab_ret *) obj->buffer.pointer);
 	} else {
-		kfree(out.pointer);
 		return AE_ERROR;
 	}
 
@@ -683,7 +883,7 @@ static acpi_status AMW0_set_capabilities(void)
 {
 	struct wmab_args args;
 	struct wmab_ret ret;
-	acpi_status status;
+	acpi_status status = AE_OK;
 	struct acpi_buffer out = { ACPI_ALLOCATE_BUFFER, NULL };
 	union acpi_object *obj;
 
@@ -706,13 +906,12 @@ static acpi_status AMW0_set_capabilities(void)
 	if (ACPI_FAILURE(status))
 		return status;
 
-	obj = out.pointer;
+	obj = (union acpi_object *) out.pointer;
 	if (obj && obj->type == ACPI_TYPE_BUFFER &&
 	obj->buffer.length == sizeof(struct wmab_ret)) {
 		ret = *((struct wmab_ret *) obj->buffer.pointer);
 	} else {
-		status = AE_ERROR;
-		goto out;
+		return AE_ERROR;
 	}
 
 	if (ret.eax & 0x1)
@@ -721,25 +920,22 @@ static acpi_status AMW0_set_capabilities(void)
 	args.ebx = 2 << 8;
 	args.ebx |= ACER_AMW0_BLUETOOTH_MASK;
 
-	/*
-	 * It's ok to use existing buffer for next wmab_execute call.
-	 * But we need to kfree(out.pointer) if next wmab_execute fail.
-	 */
 	status = wmab_execute(&args, &out);
 	if (ACPI_FAILURE(status))
-		goto out;
+		return status;
 
 	obj = (union acpi_object *) out.pointer;
 	if (obj && obj->type == ACPI_TYPE_BUFFER
 	&& obj->buffer.length == sizeof(struct wmab_ret)) {
 		ret = *((struct wmab_ret *) obj->buffer.pointer);
 	} else {
-		status = AE_ERROR;
-		goto out;
+		return AE_ERROR;
 	}
 
 	if (ret.eax & 0x1)
 		interface->capability |= ACER_CAP_BLUETOOTH;
+
+	kfree(out.pointer);
 
 	/*
 	 * This appears to be safe to enable, since all Wistron based laptops
@@ -749,10 +945,7 @@ static acpi_status AMW0_set_capabilities(void)
 	if (quirks->brightness >= 0)
 		interface->capability |= ACER_CAP_BRIGHTNESS;
 
-	status = AE_OK;
-out:
-	kfree(out.pointer);
-	return status;
+	return AE_OK;
 }
 
 static struct wmi_interface AMW0_interface = {
@@ -782,11 +975,8 @@ WMI_execute_u32(u32 method_id, u32 in, u32 *out)
 
 	obj = (union acpi_object *) result.pointer;
 	if (obj && obj->type == ACPI_TYPE_BUFFER &&
-		(obj->buffer.length == sizeof(u32) ||
-		obj->buffer.length == sizeof(u64))) {
+		obj->buffer.length == sizeof(u32)) {
 		tmp = *((u32 *) obj->buffer.pointer);
-	} else if (obj->type == ACPI_TYPE_INTEGER) {
-		tmp = (u32) obj->integer.value;
 	} else {
 		tmp = 0;
 	}
@@ -879,197 +1069,6 @@ static acpi_status WMID_set_u32(u32 value, u32 cap, struct wmi_interface *iface)
 	return WMI_execute_u32(method_id, (u32)value, NULL);
 }
 
-static acpi_status wmid3_get_device_status(u32 *value, u16 device)
-{
-	struct wmid3_gds_return_value return_value;
-	acpi_status status;
-	union acpi_object *obj;
-	struct wmid3_gds_input_param params = {
-		.function_num = 0x1,
-		.hotkey_number = 0x01,
-		.devices = device,
-	};
-	struct acpi_buffer input = {
-		sizeof(struct wmid3_gds_input_param),
-		&params
-	};
-	struct acpi_buffer output = { ACPI_ALLOCATE_BUFFER, NULL };
-
-	status = wmi_evaluate_method(WMID_GUID3, 0, 0x2, &input, &output);
-	if (ACPI_FAILURE(status))
-		return status;
-
-	obj = output.pointer;
-
-	if (!obj)
-		return AE_ERROR;
-	else if (obj->type != ACPI_TYPE_BUFFER) {
-		kfree(obj);
-		return AE_ERROR;
-	}
-	if (obj->buffer.length != 8) {
-		pr_warn("Unknown buffer length %d\n", obj->buffer.length);
-		kfree(obj);
-		return AE_ERROR;
-	}
-
-	return_value = *((struct wmid3_gds_return_value *)obj->buffer.pointer);
-	kfree(obj);
-
-	if (return_value.error_code || return_value.ec_return_value)
-		pr_warn("Get 0x%x Device Status failed: 0x%x - 0x%x\n",
-			device,
-			return_value.error_code,
-			return_value.ec_return_value);
-	else
-		*value = !!(return_value.devices & device);
-
-	return status;
-}
-
-static acpi_status wmid_v2_get_u32(u32 *value, u32 cap)
-{
-	u16 device;
-
-	switch (cap) {
-	case ACER_CAP_WIRELESS:
-		device = ACER_WMID3_GDS_WIRELESS;
-		break;
-	case ACER_CAP_BLUETOOTH:
-		device = ACER_WMID3_GDS_BLUETOOTH;
-		break;
-	case ACER_CAP_THREEG:
-		device = ACER_WMID3_GDS_THREEG;
-		break;
-	default:
-		return AE_ERROR;
-	}
-	return wmid3_get_device_status(value, device);
-}
-
-static acpi_status wmid3_set_device_status(u32 value, u16 device)
-{
-	struct wmid3_gds_return_value return_value;
-	acpi_status status;
-	union acpi_object *obj;
-	u16 devices;
-	struct wmid3_gds_input_param params = {
-		.function_num = 0x1,
-		.hotkey_number = 0x01,
-		.devices = commun_func_bitmap,
-	};
-	struct acpi_buffer input = {
-		sizeof(struct wmid3_gds_input_param),
-		&params
-	};
-	struct acpi_buffer output = { ACPI_ALLOCATE_BUFFER, NULL };
-	struct acpi_buffer output2 = { ACPI_ALLOCATE_BUFFER, NULL };
-
-	status = wmi_evaluate_method(WMID_GUID3, 0, 0x2, &input, &output);
-	if (ACPI_FAILURE(status))
-		return status;
-
-	obj = output.pointer;
-
-	if (!obj)
-		return AE_ERROR;
-	else if (obj->type != ACPI_TYPE_BUFFER) {
-		kfree(obj);
-		return AE_ERROR;
-	}
-	if (obj->buffer.length != 8) {
-		pr_warning("Unknown buffer length %d\n", obj->buffer.length);
-		kfree(obj);
-		return AE_ERROR;
-	}
-
-	return_value = *((struct wmid3_gds_return_value *)obj->buffer.pointer);
-	kfree(obj);
-
-	if (return_value.error_code || return_value.ec_return_value) {
-		pr_warning("Get Current Device Status failed: "
-			"0x%x - 0x%x\n", return_value.error_code,
-			return_value.ec_return_value);
-		return status;
-	}
-
-	devices = return_value.devices;
-	params.function_num = 0x2;
-	params.hotkey_number = 0x01;
-	params.devices = (value) ? (devices | device) : (devices & ~device);
-
-	status = wmi_evaluate_method(WMID_GUID3, 0, 0x1, &input, &output2);
-	if (ACPI_FAILURE(status))
-		return status;
-
-	obj = output2.pointer;
-
-	if (!obj)
-		return AE_ERROR;
-	else if (obj->type != ACPI_TYPE_BUFFER) {
-		kfree(obj);
-		return AE_ERROR;
-	}
-	if (obj->buffer.length != 4) {
-		pr_warning("Unknown buffer length %d\n", obj->buffer.length);
-		kfree(obj);
-		return AE_ERROR;
-	}
-
-	return_value = *((struct wmid3_gds_return_value *)obj->buffer.pointer);
-	kfree(obj);
-
-	if (return_value.error_code || return_value.ec_return_value)
-		pr_warning("Set Device Status failed: "
-			"0x%x - 0x%x\n", return_value.error_code,
-			return_value.ec_return_value);
-
-	return status;
-}
-
-static acpi_status wmid_v2_set_u32(u32 value, u32 cap)
-{
-	u16 device;
-
-	switch (cap) {
-	case ACER_CAP_WIRELESS:
-		device = ACER_WMID3_GDS_WIRELESS;
-		break;
-	case ACER_CAP_BLUETOOTH:
-		device = ACER_WMID3_GDS_BLUETOOTH;
-		break;
-	case ACER_CAP_THREEG:
-		device = ACER_WMID3_GDS_THREEG;
-		break;
-	default:
-		return AE_ERROR;
-	}
-	return wmid3_set_device_status(value, device);
-}
-
-static void type_aa_dmi_decode(const struct dmi_header *header, void *dummy)
-{
-	struct hotkey_function_type_aa *type_aa;
-
-	/* We are looking for OEM-specific Type AAh */
-	if (header->type != 0xAA)
-		return;
-
-	has_type_aa = true;
-	type_aa = (struct hotkey_function_type_aa *) header;
-
-	pr_info("Function bitmap for Communication Button: 0x%x\n",
-		type_aa->commun_func_bitmap);
-	commun_func_bitmap = type_aa->commun_func_bitmap;
-
-	if (type_aa->commun_func_bitmap & ACER_WMID3_GDS_WIRELESS)
-		interface->capability |= ACER_CAP_WIRELESS;
-	if (type_aa->commun_func_bitmap & ACER_WMID3_GDS_THREEG)
-		interface->capability |= ACER_CAP_THREEG;
-	if (type_aa->commun_func_bitmap & ACER_WMID3_GDS_BLUETOOTH)
-		interface->capability |= ACER_CAP_BLUETOOTH;
-}
-
 static acpi_status WMID_set_capabilities(void)
 {
 	struct acpi_buffer out = {ACPI_ALLOCATE_BUFFER, NULL};
@@ -1077,43 +1076,63 @@ static acpi_status WMID_set_capabilities(void)
 	acpi_status status;
 	u32 devices;
 
+	// leon added --
+	//printk(ACER_INFO "leon-debug: [WMID_set_capabilities]wmi_query_block(WMID_GUID2(%s), 1, &out)\n", WMID_GUID2);
+	// --
 	status = wmi_query_block(WMID_GUID2, 1, &out);
 	if (ACPI_FAILURE(status))
+	{
+		// leon added --
+		//printk(ACER_INFO "leon-debug: [WMID_set_capabilities]{ACPI_FAILURE(%d)} return status(%d)\n", status, status);
+		// --
 		return status;
+	}
 
 	obj = (union acpi_object *) out.pointer;
 	if (obj && obj->type == ACPI_TYPE_BUFFER &&
-		(obj->buffer.length == sizeof(u32) ||
-		obj->buffer.length == sizeof(u64))) {
+		obj->buffer.length == sizeof(u32)) {
+		// leon added --
+		//printk(ACER_INFO "leon-debug: [WMID_set_capabilities]devices = *((u32 *) obj->buffer.pointer)\n");
+		// --
 		devices = *((u32 *) obj->buffer.pointer);
-	} else if (obj->type == ACPI_TYPE_INTEGER) {
-		devices = (u32) obj->integer.value;
 	} else {
-		kfree(out.pointer);
+		// leon added --
+		//printk(ACER_INFO "leon-debug: [WMID_set_capabilities]!{obj && obj->type == ACPI_TYPE_BUFFER}\n"
+		//	"&& {obj->buffer.length == sizeof(u32)} return AE_ERROR\n");
+		// --
 		return AE_ERROR;
 	}
 
-	pr_info("Function bitmap for Communication Device: 0x%x\n", devices);
-	if (devices & 0x07)
-		interface->capability |= ACER_CAP_WIRELESS;
-	if (devices & 0x40)
-		interface->capability |= ACER_CAP_THREEG;
+	/* Not sure on the meaning of the relevant bits yet to detect these */
+
+	// leon added --
+	//printk(ACER_INFO "leon-debug: [WMID_set_capabilities]interface->capability(old) = %d\n", interface->capability);
+	// --
+
+	interface->capability |= ACER_CAP_WIRELESS;
+	interface->capability |= ACER_CAP_THREEG;
+
+	/* WMID always provides brightness methods */
+	interface->capability |= ACER_CAP_BRIGHTNESS;
+
 	if (devices & 0x10)
 		interface->capability |= ACER_CAP_BLUETOOTH;
+
+	// leon added --
+	//printk(ACER_INFO "leon-debug: [WMID_set_capabilities]interface->capability(new) = %d\n", interface->capability);
+	// --
 
 	if (!(devices & 0x20))
 		max_brightness = 0x9;
 
-	kfree(out.pointer);
+	// leon added --
+	//printk(ACER_INFO "leon-debug: [WMID_set_capabilities]return status(%d)\n", status);
+	// --
 	return status;
 }
 
 static struct wmi_interface wmid_interface = {
 	.type = ACER_WMID,
-};
-
-static struct wmi_interface wmid_v2_interface = {
-	.type = ACER_WMID_v2,
 };
 
 /*
@@ -1135,14 +1154,6 @@ static acpi_status get_u32(u32 *value, u32 cap)
 		}
 	case ACER_WMID:
 		status = WMID_get_u32(value, cap, interface);
-		break;
-	case ACER_WMID_v2:
-		if (cap & (ACER_CAP_WIRELESS |
-			   ACER_CAP_BLUETOOTH |
-			   ACER_CAP_THREEG))
-			status = wmid_v2_get_u32(value, cap);
-		else if (wmi_has_guid(WMID_GUID2))
-			status = WMID_get_u32(value, cap, interface);
 		break;
 	}
 
@@ -1177,13 +1188,6 @@ static acpi_status set_u32(u32 value, u32 cap)
 			}
 		case ACER_WMID:
 			return WMID_set_u32(value, cap, interface);
-		case ACER_WMID_v2:
-			if (cap & (ACER_CAP_WIRELESS |
-				   ACER_CAP_BLUETOOTH |
-				   ACER_CAP_THREEG))
-				return wmid_v2_set_u32(value, cap);
-			else if (wmi_has_guid(WMID_GUID2))
-				return WMID_set_u32(value, cap, interface);
 		default:
 			return AE_BAD_PARAMETER;
 		}
@@ -1191,19 +1195,6 @@ static acpi_status set_u32(u32 value, u32 cap)
 	return AE_BAD_PARAMETER;
 }
 
-static void __init acer_commandline_init(void)
-{
-	/*
-	 * These will all fail silently if the value given is invalid, or the
-	 * capability isn't available on the given interface
-	 */
-	if (mailled >= 0)
-		set_u32(mailled, ACER_CAP_MAILLED);
-	if (!has_type_aa && threeg >= 0)
-		set_u32(threeg, ACER_CAP_THREEG);
-	if (brightness >= 0)
-		set_u32(brightness, ACER_CAP_BRIGHTNESS);
-}
 
 /*
  * LED device (Mail LED only, no other LEDs known yet)
@@ -1226,7 +1217,6 @@ static int __devinit acer_led_init(struct device *dev)
 
 static void acer_led_exit(void)
 {
-	set_u32(LED_OFF, ACER_CAP_MAILLED);
 	led_classdev_unregister(&mail_led);
 }
 
@@ -1256,23 +1246,24 @@ static int update_bl_status(struct backlight_device *bd)
 	return 0;
 }
 
-static const struct backlight_ops acer_bl_ops = {
+static struct backlight_ops acer_bl_ops = {
 	.get_brightness = read_brightness,
 	.update_status = update_bl_status,
 };
 
 static int __devinit acer_backlight_init(struct device *dev)
 {
-	struct backlight_properties props;
 	struct backlight_device *bd;
 
+	/* added by nancy 2010-11-23 */
+	struct backlight_properties props;
 	memset(&props, 0, sizeof(struct backlight_properties));
-	props.type = BACKLIGHT_PLATFORM;
-	props.max_brightness = max_brightness;
-	bd = backlight_device_register("acer-wmi", dev, NULL, &acer_bl_ops,
-				       &props);
+	bd = backlight_device_register("acer-wmi", dev, NULL, &acer_bl_ops, &props);
+	/*---------end----------*/
+
+	//bd = backlight_device_register("acer-wmi", dev, NULL, &acer_bl_ops);
 	if (IS_ERR(bd)) {
-		pr_err("Could not register Acer backlight device\n");
+		printk(ACER_ERR "Could not register Acer backlight device\n");
 		acer_backlight_device = NULL;
 		return PTR_ERR(bd);
 	}
@@ -1280,7 +1271,8 @@ static int __devinit acer_backlight_init(struct device *dev)
 	acer_backlight_device = bd;
 
 	bd->props.power = FB_BLANK_UNBLANK;
-	bd->props.brightness = read_brightness(bd);
+	bd->props.brightness = max_brightness;
+	bd->props.max_brightness = max_brightness;
 	backlight_update_status(bd);
 	return 0;
 }
@@ -1300,26 +1292,14 @@ static void acer_rfkill_update(struct work_struct *ignored)
 	u32 state;
 	acpi_status status;
 
-	if (has_cap(ACER_CAP_WIRELESS)) {
-		status = get_u32(&state, ACER_CAP_WIRELESS);
-		if (ACPI_SUCCESS(status)) {
-			if (quirks->wireless == 3)
-				rfkill_set_hw_state(wireless_rfkill, !state);
-			else
-				rfkill_set_sw_state(wireless_rfkill, !state);
-		}
-	}
+	status = get_u32(&state, ACER_CAP_WIRELESS);
+	if (ACPI_SUCCESS(status))
+		rfkill_set_sw_state(wireless_rfkill, !state);
 
 	if (has_cap(ACER_CAP_BLUETOOTH)) {
 		status = get_u32(&state, ACER_CAP_BLUETOOTH);
 		if (ACPI_SUCCESS(status))
 			rfkill_set_sw_state(bluetooth_rfkill, !state);
-	}
-
-	if (has_cap(ACER_CAP_THREEG) && wmi_has_guid(WMID_GUID3)) {
-		status = get_u32(&state, ACER_WMID3_GDS_THREEG);
-		if (ACPI_SUCCESS(status))
-			rfkill_set_sw_state(threeg_rfkill, !state);
 	}
 
 	schedule_delayed_work(&acer_rfkill_work, round_jiffies_relative(HZ));
@@ -1329,13 +1309,9 @@ static int acer_rfkill_set(void *data, bool blocked)
 {
 	acpi_status status;
 	u32 cap = (unsigned long)data;
-
-	if (rfkill_inited) {
-		status = set_u32(!blocked, cap);
-		if (ACPI_FAILURE(status))
-			return -ENODEV;
-	}
-
+	status = set_u32(!blocked, cap);
+	if (ACPI_FAILURE(status))
+		return -ENODEV;
 	return 0;
 }
 
@@ -1349,8 +1325,6 @@ static struct rfkill *acer_rfkill_register(struct device *dev,
 {
 	int err;
 	struct rfkill *rfkill_dev;
-	u32 state;
-	acpi_status status;
 
 	rfkill_dev = rfkill_alloc(name, dev, type,
 				  &acer_rfkill_ops,
@@ -1358,95 +1332,47 @@ static struct rfkill *acer_rfkill_register(struct device *dev,
 	if (!rfkill_dev)
 		return ERR_PTR(-ENOMEM);
 
-	status = get_u32(&state, cap);
-
 	err = rfkill_register(rfkill_dev);
 	if (err) {
 		rfkill_destroy(rfkill_dev);
 		return ERR_PTR(err);
 	}
-
-	if (ACPI_SUCCESS(status))
-		rfkill_set_sw_state(rfkill_dev, !state);
-
 	return rfkill_dev;
 }
 
 static int acer_rfkill_init(struct device *dev)
 {
-	int err;
-
-	if (has_cap(ACER_CAP_WIRELESS)) {
-		wireless_rfkill = acer_rfkill_register(dev, RFKILL_TYPE_WLAN,
-			"acer-wireless", ACER_CAP_WIRELESS);
-		if (IS_ERR(wireless_rfkill)) {
-			err = PTR_ERR(wireless_rfkill);
-			goto error_wireless;
-		}
-	}
+	wireless_rfkill = acer_rfkill_register(dev, RFKILL_TYPE_WLAN,
+		"acer-wireless", ACER_CAP_WIRELESS);
+	if (IS_ERR(wireless_rfkill))
+		return PTR_ERR(wireless_rfkill);
 
 	if (has_cap(ACER_CAP_BLUETOOTH)) {
 		bluetooth_rfkill = acer_rfkill_register(dev,
 			RFKILL_TYPE_BLUETOOTH, "acer-bluetooth",
 			ACER_CAP_BLUETOOTH);
 		if (IS_ERR(bluetooth_rfkill)) {
-			err = PTR_ERR(bluetooth_rfkill);
-			goto error_bluetooth;
+			rfkill_unregister(wireless_rfkill);
+			rfkill_destroy(wireless_rfkill);
+			return PTR_ERR(bluetooth_rfkill);
 		}
 	}
 
-	if (has_cap(ACER_CAP_THREEG)) {
-		threeg_rfkill = acer_rfkill_register(dev,
-			RFKILL_TYPE_WWAN, "acer-threeg",
-			ACER_CAP_THREEG);
-		if (IS_ERR(threeg_rfkill)) {
-			err = PTR_ERR(threeg_rfkill);
-			goto error_threeg;
-		}
-	}
-
-	rfkill_inited = true;
-
-	if ((ec_raw_mode || !wmi_has_guid(ACERWMID_EVENT_GUID)) &&
-	    has_cap(ACER_CAP_WIRELESS | ACER_CAP_BLUETOOTH | ACER_CAP_THREEG))
-		schedule_delayed_work(&acer_rfkill_work,
-			round_jiffies_relative(HZ));
+	schedule_delayed_work(&acer_rfkill_work, round_jiffies_relative(HZ));
 
 	return 0;
-
-error_threeg:
-	if (has_cap(ACER_CAP_BLUETOOTH)) {
-		rfkill_unregister(bluetooth_rfkill);
-		rfkill_destroy(bluetooth_rfkill);
-	}
-error_bluetooth:
-	if (has_cap(ACER_CAP_WIRELESS)) {
-		rfkill_unregister(wireless_rfkill);
-		rfkill_destroy(wireless_rfkill);
-	}
-error_wireless:
-	return err;
 }
 
 static void acer_rfkill_exit(void)
 {
-	if ((ec_raw_mode || !wmi_has_guid(ACERWMID_EVENT_GUID)) &&
-	    has_cap(ACER_CAP_WIRELESS | ACER_CAP_BLUETOOTH | ACER_CAP_THREEG))
-		cancel_delayed_work_sync(&acer_rfkill_work);
+	cancel_delayed_work_sync(&acer_rfkill_work);
 
-	if (has_cap(ACER_CAP_WIRELESS)) {
-		rfkill_unregister(wireless_rfkill);
-		rfkill_destroy(wireless_rfkill);
-	}
+	rfkill_unregister(wireless_rfkill);
+	rfkill_destroy(wireless_rfkill);
 
 	if (has_cap(ACER_CAP_BLUETOOTH)) {
 		rfkill_unregister(bluetooth_rfkill);
 		rfkill_destroy(bluetooth_rfkill);
-	}
-
-	if (has_cap(ACER_CAP_THREEG)) {
-		rfkill_unregister(threeg_rfkill);
-		rfkill_destroy(threeg_rfkill);
 	}
 	return;
 }
@@ -1458,11 +1384,7 @@ static ssize_t show_bool_threeg(struct device *dev,
 	struct device_attribute *attr, char *buf)
 {
 	u32 result; \
-	acpi_status status;
-
-	pr_info("This threeg sysfs will be removed in 2012"
-		" - used by: %s\n", current->comm);
-	status = get_u32(&result, ACER_CAP_THREEG);
+	acpi_status status = get_u32(&result, ACER_CAP_THREEG);
 	if (ACPI_SUCCESS(status))
 		return sprintf(buf, "%u\n", result);
 	return sprintf(buf, "Read error\n");
@@ -1473,20 +1395,16 @@ static ssize_t set_bool_threeg(struct device *dev,
 {
 	u32 tmp = simple_strtoul(buf, NULL, 10);
 	acpi_status status = set_u32(tmp, ACER_CAP_THREEG);
-	pr_info("This threeg sysfs will be removed in 2012"
-		" - used by: %s\n", current->comm);
-	if (ACPI_FAILURE(status))
-		return -EINVAL;
+		if (ACPI_FAILURE(status))
+			return -EINVAL;
 	return count;
 }
-static DEVICE_ATTR(threeg, S_IRUGO | S_IWUSR, show_bool_threeg,
+static DEVICE_ATTR(threeg, S_IWUGO | S_IRUGO | S_IWUSR, show_bool_threeg,
 	set_bool_threeg);
 
 static ssize_t show_interface(struct device *dev, struct device_attribute *attr,
 	char *buf)
 {
-	pr_info("This interface sysfs will be removed in 2012"
-		" - used by: %s\n", current->comm);
 	switch (interface->type) {
 	case ACER_AMW0:
 		return sprintf(buf, "AMW0\n");
@@ -1494,207 +1412,13 @@ static ssize_t show_interface(struct device *dev, struct device_attribute *attr,
 		return sprintf(buf, "AMW0 v2\n");
 	case ACER_WMID:
 		return sprintf(buf, "WMID\n");
-	case ACER_WMID_v2:
-		return sprintf(buf, "WMID v2\n");
 	default:
 		return sprintf(buf, "Error!\n");
 	}
 }
 
-static DEVICE_ATTR(interface, S_IRUGO, show_interface, NULL);
-
-static void acer_wmi_notify(u32 value, void *context)
-{
-	struct acpi_buffer response = { ACPI_ALLOCATE_BUFFER, NULL };
-	union acpi_object *obj;
-	struct event_return_value return_value;
-	acpi_status status;
-	u16 device_state;
-	const struct key_entry *key;
-
-	status = wmi_get_event_data(value, &response);
-	if (status != AE_OK) {
-		pr_warn("bad event status 0x%x\n", status);
-		return;
-	}
-
-	obj = (union acpi_object *)response.pointer;
-
-	if (!obj)
-		return;
-	if (obj->type != ACPI_TYPE_BUFFER) {
-		pr_warn("Unknown response received %d\n", obj->type);
-		kfree(obj);
-		return;
-	}
-	if (obj->buffer.length != 8) {
-		pr_warn("Unknown buffer length %d\n", obj->buffer.length);
-		kfree(obj);
-		return;
-	}
-
-	return_value = *((struct event_return_value *)obj->buffer.pointer);
-	kfree(obj);
-
-	switch (return_value.function) {
-	case WMID_HOTKEY_EVENT:
-		device_state = return_value.device_state;
-		pr_debug("device state: 0x%x\n", device_state);
-
-		key = sparse_keymap_entry_from_scancode(acer_wmi_input_dev,
-							return_value.key_num);
-		if (!key) {
-			pr_warn("Unknown key number - 0x%x\n",
-				return_value.key_num);
-		} else {
-			switch (key->keycode) {
-			case KEY_WLAN:
-			case KEY_BLUETOOTH:
-				if (has_cap(ACER_CAP_WIRELESS))
-					rfkill_set_sw_state(wireless_rfkill,
-						!(device_state & ACER_WMID3_GDS_WIRELESS));
-				if (has_cap(ACER_CAP_THREEG))
-					rfkill_set_sw_state(threeg_rfkill,
-						!(device_state & ACER_WMID3_GDS_THREEG));
-				if (has_cap(ACER_CAP_BLUETOOTH))
-					rfkill_set_sw_state(bluetooth_rfkill,
-						!(device_state & ACER_WMID3_GDS_BLUETOOTH));
-				break;
-			}
-			sparse_keymap_report_entry(acer_wmi_input_dev, key,
-						   1, true);
-		}
-		break;
-	default:
-		pr_warn("Unknown function number - %d - %d\n",
-			return_value.function, return_value.key_num);
-		break;
-	}
-}
-
-static acpi_status
-wmid3_set_lm_mode(struct lm_input_params *params,
-		  struct lm_return_value *return_value)
-{
-	acpi_status status;
-	union acpi_object *obj;
-
-	struct acpi_buffer input = { sizeof(struct lm_input_params), params };
-	struct acpi_buffer output = { ACPI_ALLOCATE_BUFFER, NULL };
-
-	status = wmi_evaluate_method(WMID_GUID3, 0, 0x1, &input, &output);
-	if (ACPI_FAILURE(status))
-		return status;
-
-	obj = output.pointer;
-
-	if (!obj)
-		return AE_ERROR;
-	else if (obj->type != ACPI_TYPE_BUFFER) {
-		kfree(obj);
-		return AE_ERROR;
-	}
-	if (obj->buffer.length != 4) {
-		pr_warn("Unknown buffer length %d\n", obj->buffer.length);
-		kfree(obj);
-		return AE_ERROR;
-	}
-
-	*return_value = *((struct lm_return_value *)obj->buffer.pointer);
-	kfree(obj);
-
-	return status;
-}
-
-static int acer_wmi_enable_ec_raw(void)
-{
-	struct lm_return_value return_value;
-	acpi_status status;
-	struct lm_input_params params = {
-		.function_num = 0x1,
-		.commun_devices = 0xFFFF,
-		.devices = 0xFFFF,
-		.lm_status = 0x00,            /* Launch Manager Deactive */
-	};
-
-	status = wmid3_set_lm_mode(&params, &return_value);
-
-	if (return_value.error_code || return_value.ec_return_value)
-		pr_warn("Enabling EC raw mode failed: 0x%x - 0x%x\n",
-			return_value.error_code,
-			return_value.ec_return_value);
-	else
-		pr_info("Enabled EC raw mode\n");
-
-	return status;
-}
-
-static int acer_wmi_enable_lm(void)
-{
-	struct lm_return_value return_value;
-	acpi_status status;
-	struct lm_input_params params = {
-		.function_num = 0x1,
-		.commun_devices = 0xFFFF,
-		.devices = 0xFFFF,
-		.lm_status = 0x01,            /* Launch Manager Active */
-	};
-
-	status = wmid3_set_lm_mode(&params, &return_value);
-
-	if (return_value.error_code || return_value.ec_return_value)
-		pr_warn("Enabling Launch Manager failed: 0x%x - 0x%x\n",
-			return_value.error_code,
-			return_value.ec_return_value);
-
-	return status;
-}
-
-static int __init acer_wmi_input_setup(void)
-{
-	acpi_status status;
-	int err;
-
-	acer_wmi_input_dev = input_allocate_device();
-	if (!acer_wmi_input_dev)
-		return -ENOMEM;
-
-	acer_wmi_input_dev->name = "Acer WMI hotkeys";
-	acer_wmi_input_dev->phys = "wmi/input0";
-	acer_wmi_input_dev->id.bustype = BUS_HOST;
-
-	err = sparse_keymap_setup(acer_wmi_input_dev, acer_wmi_keymap, NULL);
-	if (err)
-		goto err_free_dev;
-
-	status = wmi_install_notify_handler(ACERWMID_EVENT_GUID,
-						acer_wmi_notify, NULL);
-	if (ACPI_FAILURE(status)) {
-		err = -EIO;
-		goto err_free_keymap;
-	}
-
-	err = input_register_device(acer_wmi_input_dev);
-	if (err)
-		goto err_uninstall_notifier;
-
-	return 0;
-
-err_uninstall_notifier:
-	wmi_remove_notify_handler(ACERWMID_EVENT_GUID);
-err_free_keymap:
-	sparse_keymap_free(acer_wmi_input_dev);
-err_free_dev:
-	input_free_device(acer_wmi_input_dev);
-	return err;
-}
-
-static void acer_wmi_input_destroy(void)
-{
-	wmi_remove_notify_handler(ACERWMID_EVENT_GUID);
-	sparse_keymap_free(acer_wmi_input_dev);
-	input_unregister_device(acer_wmi_input_dev);
-}
+static DEVICE_ATTR(interface, S_IWUGO | S_IRUGO | S_IWUSR,
+	show_interface, NULL);
 
 /*
  * debugfs functions
@@ -1704,7 +1428,7 @@ static u32 get_wmid_devices(void)
 	struct acpi_buffer out = {ACPI_ALLOCATE_BUFFER, NULL};
 	union acpi_object *obj;
 	acpi_status status;
-	u32 devices = 0;
+
 
 	status = wmi_query_block(WMID_GUID2, 1, &out);
 	if (ACPI_FAILURE(status))
@@ -1712,15 +1436,400 @@ static u32 get_wmid_devices(void)
 
 	obj = (union acpi_object *) out.pointer;
 	if (obj && obj->type == ACPI_TYPE_BUFFER &&
-		(obj->buffer.length == sizeof(u32) ||
-		obj->buffer.length == sizeof(u64))) {
-		devices = *((u32 *) obj->buffer.pointer);
-	} else if (obj->type == ACPI_TYPE_INTEGER) {
-		devices = (u32) obj->integer.value;
+		obj->buffer.length == sizeof(u32)) {
+		return *((u32 *) obj->buffer.pointer);
+	} else {
+		return 0;
+	}
+}
+
+/*
+ * acer_wmi_hotkey_set_function1 (Set Device Default Value and Report LM status)
+ * @leon added for WMID_GUID4
+ * @method_id:0x1, Byte[0]:0x1, Set Device Default Value and Report LM status
+ * @method_id:0x1, Byte[1]:0x2, Set Next Device
+ */
+static acpi_status 
+acer_wmi_hotkey_set_function1(u32 method_id, 
+			      struct acer_wmi_hotkey_set_function1_input_arg2 in, 
+			      struct acer_wmi_hotkey_set_function1_return_value *out)
+{
+	struct acpi_buffer input = { (acpi_size) sizeof(struct acer_wmi_hotkey_set_function1_input_arg2),
+					(void *)(&in) };
+	struct acpi_buffer result = { ACPI_ALLOCATE_BUFFER, NULL };
+	union acpi_object *obj;
+
+	struct acer_wmi_hotkey_set_function1_return_value tmp;
+	acpi_status status;
+
+	
+	status = wmi_evaluate_method(WMID_GUID4, 1, method_id, &input, &result);
+
+	if (ACPI_FAILURE(status)) {
+		return status;
+		return -EINVAL;
 	}
 
-	kfree(out.pointer);
-	return devices;
+	obj = (union acpi_object *) result.pointer;
+	if (obj && obj->type == ACPI_TYPE_BUFFER 
+		&& obj->buffer.length == sizeof(struct acer_wmi_hotkey_set_function1_return_value)) {
+		tmp = *((struct acer_wmi_hotkey_set_function1_return_value *)obj->buffer.pointer);
+	} else {
+		return -EINVAL;
+	}
+
+	if (out)
+		*out = tmp;
+
+	kfree(result.pointer);
+
+	return status;	
+}
+
+/*
+ * acer_wmi_hotkey_set_function2 (Set Next Device)
+ * @leon added for WMID_GUID4
+ * @method_id:0x1, Byte[1]:0x2, Set Next Device
+ */
+static acpi_status 
+acer_wmi_hotkey_set_function2(u32 method_id, 
+			      struct acer_wmi_hotkey_set_function2_input_arg2 in, 
+			      struct acer_wmi_hotkey_set_function2_return_value *out)
+{
+	struct acpi_buffer input = { (acpi_size) sizeof(struct acer_wmi_hotkey_set_function2_input_arg2),
+					(void *)(&in) };
+	struct acpi_buffer result = { ACPI_ALLOCATE_BUFFER, NULL };
+	union acpi_object *obj;
+
+	struct acer_wmi_hotkey_set_function2_return_value tmp;
+	acpi_status status;
+
+	
+	status = wmi_evaluate_method(WMID_GUID4, 1, method_id, &input, &result);
+
+	if (ACPI_FAILURE(status)) {
+		return status;
+		return -EINVAL;
+	}
+
+	obj = (union acpi_object *) result.pointer;
+	if (obj && obj->type == ACPI_TYPE_BUFFER 
+		&& obj->buffer.length == sizeof(struct acer_wmi_hotkey_set_function2_return_value)) {
+		tmp = *((struct acer_wmi_hotkey_set_function2_return_value *)obj->buffer.pointer);
+	} else {
+		return -EINVAL;
+	}
+
+	if (out)
+		*out = tmp;
+
+	kfree(result.pointer);
+
+	return status;	
+}
+
+/*
+ * acer_wmi_hotkey_get_function1 
+ * @method_id:0x2, Byte[0]:0x1, Get Device status
+ */
+static acpi_status acer_wmi_hotkey_get_function1(u32 method_id, 
+						 struct acer_wmi_hotkey_get_function1_input_arg2 in, 
+						 struct acer_wmi_hotkey_get_function1_return_value *out)
+{
+	struct acpi_buffer input = { (acpi_size) sizeof(struct acer_wmi_hotkey_get_function1_input_arg2),
+					(void *)(&in) };
+	struct acpi_buffer result = { ACPI_ALLOCATE_BUFFER, NULL };
+	union acpi_object *obj;
+
+	struct acer_wmi_hotkey_get_function1_return_value tmp;
+	acpi_status status;
+
+	status = wmi_evaluate_method(WMID_GUID4, 1, method_id, &input, &result);
+	if (ACPI_FAILURE(status)) {
+		return -EINVAL;
+	}
+	obj = (union acpi_object *) result.pointer;
+	if (obj && obj->type == ACPI_TYPE_BUFFER 
+		&& obj->buffer.length == sizeof(struct acer_wmi_hotkey_get_function1_return_value)) {
+		tmp = *((struct acer_wmi_hotkey_get_function1_return_value *)obj->buffer.pointer);
+	} else {
+		return -EINVAL;
+	}
+
+	if (out)
+		*out = tmp;
+	kfree(result.pointer);
+	return status;	
+}
+/*
+ * to get device status
+ */
+static void acer_wmi_get_device_status (u8 hotkey_number, u16 function_bit)
+{
+	struct acer_wmi_hotkey_get_function1_input_arg2 arg2 = {
+		.function_number = 0x1,
+		.hotkey_number = hotkey_number,
+		.function_bit = function_bit,
+	};
+
+	struct acer_wmi_hotkey_get_function1_return_value result;
+	
+	acer_wmi_hotkey_get_function1(ACER_WMID_HOTKEY_GET_FUNCTION_METHODID, arg2, &result);
+	commu_status = result.device_status;
+}
+
+/*
+ * acer_wmi_notify
+ * @leon added
+ */
+static void acer_wmi_notify(u32 value, void *context)
+{
+	struct acpi_buffer response = { ACPI_ALLOCATE_BUFFER, NULL};
+	union acpi_object *obj;
+	struct acer_wmi_hotkey_generate_hotkey_event_return_value result;
+	u16 acer_hotkey;
+
+	struct sk_buff *skb = NULL;
+	struct nlmsghdr *nlh;
+	int len;
+	static int wimax = 0;
+
+	wmi_get_event_data(value, &response);
+
+	obj = (union acpi_object *)response.pointer;
+	printk (ACER_ERR "@@@@ LINPUS %s\n", __func__);
+	if (obj && obj->type == ACPI_TYPE_BUFFER 
+		&& obj->buffer.length == sizeof(struct acer_wmi_hotkey_generate_hotkey_event_return_value)) {
+		result = *((struct acer_wmi_hotkey_generate_hotkey_event_return_value *)obj->buffer.pointer);
+		
+		if (result.function_number == 0x1) {
+			acer_hotkey = wmi_get_hotkey_map (result.key_number);
+			printk (ACER_ERR "you have press  result.key_number: 0x%02x  fn+hokey 0x%04x\n",result.key_number, acer_hotkey);
+			if (result.key_number >= 0x01 && result.key_number <= 0x1F) {
+				struct acer_wmi_hotkey_set_function2_input_arg2 arg2 = {
+					.function_number = 0x2,
+					.hotkey_number = result.key_number,
+				};
+				acer_hotkey = wmi_get_hotkey_map (result.key_number);
+				printk (ACER_ERR "you have press the wifi fn+hokey 0x%04x\n", acer_hotkey);
+				if ( acer_hotkey & 0x0001)
+				{
+					commu_status = result.device_status;
+#if  0
+					if (result.device_status & 0x0001)   // if WIFI on
+					{
+						if (result.device_status == 0x0081)
+							wimax = 1;
+						arg2.next_device = 0x0000;
+						skb = alloc_skb (NLMSG_SPACE(MAX_PAYLOAD), GFP_KERNEL);
+						nlh = NLMSG_PUT (skb, 0, 0, NLMSG_DONE, NLMSG_SPACE(MAX_PAYLOAD));
+						len = strncpy (NLMSG_DATA(nlh), "wifi off", sizeof("wifi off"));
+						NETLINK_CB (skb).dst_group = 1;
+						netlink_broadcast (acer_sock_user, skb, 0, 1, GFP_KERNEL);
+					}
+					else
+					{
+						skb = alloc_skb (NLMSG_SPACE(MAX_PAYLOAD), GFP_KERNEL);
+						nlh = NLMSG_PUT (skb, 0, 0, NLMSG_DONE, NLMSG_SPACE(MAX_PAYLOAD));
+						len = strncpy (NLMSG_DATA(nlh), "wifi on", sizeof("wifi on"));
+						NETLINK_CB (skb).dst_group = 1;
+						netlink_broadcast (acer_sock_user, skb, 0, 1, GFP_KERNEL);
+						if (wimax){
+							arg2.next_device = 0x0081;
+							wimax = 0;
+						}else{
+							arg2.next_device = 0x0001;   //if Wifi off
+						}
+					}
+					struct acer_wmi_hotkey_set_function2_return_value result2;
+					acer_wmi_hotkey_set_function2(ACER_WMID_HOTKEY_SET_FUNCTION_METHODID, arg2, &result2);
+#endif 
+					skb = alloc_skb (NLMSG_SPACE(MAX_PAYLOAD), GFP_KERNEL);
+					nlh = NLMSG_PUT (skb, 0, 0, NLMSG_DONE, NLMSG_SPACE(MAX_PAYLOAD));
+					len = strncpy (NLMSG_DATA(nlh), "wifi event", sizeof("wifi event"));
+					NETLINK_CB (skb).dst_group = 1;
+					netlink_broadcast (acer_sock_user, skb, 0, 1, GFP_KERNEL);
+				}
+
+				if (acer_hotkey & 0x4000)
+				{
+					printk ("RF status:0x%04x\n", result.device_status);
+					if (result.device_status & 0x4000)
+					{
+						skb = alloc_skb (NLMSG_SPACE(MAX_PAYLOAD), GFP_KERNEL);
+                                                nlh = NLMSG_PUT (skb, 0, 0, NLMSG_DONE, NLMSG_SPACE(MAX_PAYLOAD));
+                                                len = strncpy (NLMSG_DATA(nlh), "RF on", sizeof("RF on"));
+                                                NETLINK_CB (skb).dst_group = 1;
+                                                netlink_broadcast (acer_sock_user, skb, 0, 1, GFP_KERNEL);
+					}else{
+						skb = alloc_skb (NLMSG_SPACE(MAX_PAYLOAD), GFP_KERNEL);
+                                                nlh = NLMSG_PUT (skb, 0, 0, NLMSG_DONE, NLMSG_SPACE(MAX_PAYLOAD));
+                                                len = strncpy (NLMSG_DATA(nlh), "RF off", sizeof("RF off"));
+                                                NETLINK_CB (skb).dst_group = 1;
+                                                netlink_broadcast (acer_sock_user, skb, 0, 1, GFP_KERNEL);
+					}
+				}
+			}
+			else if (result.key_number >= 0x21 && result.key_number <= 0x3F) {
+				acer_hotkey = wmi_get_hotkey_map (result.key_number);
+				if (acer_hotkey & 0x0008){
+						skb = alloc_skb (NLMSG_SPACE(MAX_PAYLOAD), GFP_KERNEL);
+						nlh = NLMSG_PUT (skb, 0, 0, NLMSG_DONE, NLMSG_SPACE(MAX_PAYLOAD));
+						len = strncpy (NLMSG_DATA(nlh), "call sn", sizeof("call sn"));
+						NETLINK_CB (skb).dst_group = 1;
+						netlink_broadcast (acer_sock_user, skb, 0, 1, GFP_KERNEL);
+
+				}else if (acer_hotkey & 0x0004){
+						skb = alloc_skb (NLMSG_SPACE(MAX_PAYLOAD), GFP_KERNEL);
+						nlh = NLMSG_PUT (skb, 0, 0, NLMSG_DONE, NLMSG_SPACE(MAX_PAYLOAD));
+						len = strncpy (NLMSG_DATA(nlh), "call p_key", sizeof("call p_key"));
+						NETLINK_CB (skb).dst_group = 1;
+						netlink_broadcast (acer_sock_user, skb, 0, 1, GFP_KERNEL);
+
+				}else if (acer_hotkey & 0x0001){
+						skb = alloc_skb (NLMSG_SPACE(MAX_PAYLOAD), GFP_KERNEL);
+						nlh = NLMSG_PUT (skb, 0, 0, NLMSG_DONE, NLMSG_SPACE(MAX_PAYLOAD));
+						len = strncpy (NLMSG_DATA(nlh), "call backup", sizeof("call backup"));
+						NETLINK_CB (skb).dst_group = 1;
+						netlink_broadcast (acer_sock_user, skb, 0, 1, GFP_KERNEL);
+				}else if (acer_hotkey & 0x0010){
+						skb = alloc_skb (NLMSG_SPACE(MAX_PAYLOAD), GFP_KERNEL);
+						nlh = NLMSG_PUT (skb, 0, 0, NLMSG_DONE, NLMSG_SPACE(MAX_PAYLOAD));
+						len = strncpy (NLMSG_DATA(nlh), "call app1", sizeof("call app1"));
+						NETLINK_CB (skb).dst_group = 1;
+						netlink_broadcast (acer_sock_user, skb, 0, 1, GFP_KERNEL);
+				}else if (acer_hotkey & 0x0020){
+						skb = alloc_skb (NLMSG_SPACE(MAX_PAYLOAD), GFP_KERNEL);
+						nlh = NLMSG_PUT (skb, 0, 0, NLMSG_DONE, NLMSG_SPACE(MAX_PAYLOAD));
+						len = strncpy (NLMSG_DATA(nlh), "call app2", sizeof("call app2"));
+						NETLINK_CB (skb).dst_group = 1;
+						netlink_broadcast (acer_sock_user, skb, 0, 1, GFP_KERNEL);
+				}
+			}
+#if  0 /*20110302*/
+			else if (result.key_number >= 0x41 && result.key_number <= 0x5F) {
+				acer_hotkey = wmi_get_hotkey_map (result.key_number);
+				printk (ACER_ERR "@@@@ LINPUS MEDIA HOTKEY 0X%04x\n", acer_hotkey);
+				if ( acer_hotkey & 0x0001)
+				{
+						skb = alloc_skb (NLMSG_SPACE(MAX_PAYLOAD), GFP_KERNEL);
+						nlh = NLMSG_PUT (skb, 0, 0, NLMSG_DONE, NLMSG_SPACE(MAX_PAYLOAD));
+						len = strncpy (NLMSG_DATA(nlh), "volume up", sizeof("volume up"));
+						NETLINK_CB (skb).dst_group = 1;
+						netlink_broadcast (acer_sock_user, skb, 0, 1, GFP_KERNEL);
+				}else if (acer_hotkey & 0x0002){
+						skb = alloc_skb (NLMSG_SPACE(MAX_PAYLOAD), GFP_KERNEL);
+						nlh = NLMSG_PUT (skb, 0, 0, NLMSG_DONE, NLMSG_SPACE(MAX_PAYLOAD));
+						len = strncpy (NLMSG_DATA(nlh), "volume down", sizeof("volume down"));
+						NETLINK_CB (skb).dst_group = 1;
+						netlink_broadcast (acer_sock_user, skb, 0, 1, GFP_KERNEL);
+				}else if (acer_hotkey & 0x0004){
+						skb = alloc_skb (NLMSG_SPACE(MAX_PAYLOAD), GFP_KERNEL);
+						nlh = NLMSG_PUT (skb, 0, 0, NLMSG_DONE, NLMSG_SPACE(MAX_PAYLOAD));
+						len = strncpy (NLMSG_DATA(nlh), "mute", sizeof("mute"));
+						NETLINK_CB (skb).dst_group = 1;
+						netlink_broadcast (acer_sock_user, skb, 0, 1, GFP_KERNEL);
+				}
+			}
+#endif 
+			else if (result.key_number >= 0x61 && result.key_number <= 0x7F) {
+				acer_hotkey = wmi_get_hotkey_map (result.key_number);
+				if ( acer_hotkey & 0x0001){
+					skb = alloc_skb (NLMSG_SPACE(MAX_PAYLOAD), GFP_KERNEL);
+					nlh = NLMSG_PUT (skb, 0, 0, NLMSG_DONE, NLMSG_SPACE(MAX_PAYLOAD));
+					len = strncpy (NLMSG_DATA(nlh), "brightness up", sizeof("brightness up"));
+					NETLINK_CB (skb).dst_group = 1;
+					netlink_broadcast (acer_sock_user, skb, 0, 1, GFP_KERNEL);
+				}else if (acer_hotkey & 0x0002){
+					skb = alloc_skb (NLMSG_SPACE(MAX_PAYLOAD), GFP_KERNEL);
+					nlh = NLMSG_PUT (skb, 0, 0, NLMSG_DONE, NLMSG_SPACE(MAX_PAYLOAD));
+					len = strncpy (NLMSG_DATA(nlh), "brightness down", sizeof("brightness down"));
+					NETLINK_CB (skb).dst_group = 1;
+					netlink_broadcast (acer_sock_user, skb, 0, 1, GFP_KERNEL);
+				}else if (acer_hotkey & 0x0004){
+				}else if (acer_hotkey & 0x0008){
+					skb = alloc_skb (NLMSG_SPACE(MAX_PAYLOAD), GFP_KERNEL);
+					nlh = NLMSG_PUT (skb, 0, 0, NLMSG_DONE, NLMSG_SPACE(MAX_PAYLOAD));
+					len = strncpy (NLMSG_DATA(nlh), "display switch", sizeof("display switch"));
+					NETLINK_CB (skb).dst_group = 1;
+					netlink_broadcast (acer_sock_user, skb, 0, 1, GFP_KERNEL);
+				}
+			}
+			else if (result.key_number >= 0x81 && result.key_number <= 0x9F) {
+				acer_hotkey = wmi_get_hotkey_map (result.key_number);
+				if (acer_hotkey & 0x0002)
+				{
+					printk (ACER_ERR "@@@@  LINPUS TOUCHPAD STATUS 0X%04x\n", result.device_status);
+					if (result.device_status & 0x0002)
+					{
+						skb = alloc_skb (NLMSG_SPACE(MAX_PAYLOAD), GFP_KERNEL);
+						nlh = NLMSG_PUT (skb, 0, 0, NLMSG_DONE, NLMSG_SPACE(MAX_PAYLOAD));
+						len = strncpy (NLMSG_DATA(nlh), "touchpad on", sizeof("touchpad on"));
+						NETLINK_CB (skb).dst_group = 1;
+						netlink_broadcast (acer_sock_user, skb, 0, 1, GFP_KERNEL);
+					}else{
+						skb = alloc_skb (NLMSG_SPACE(MAX_PAYLOAD), GFP_KERNEL);
+						nlh = NLMSG_PUT (skb, 0, 0, NLMSG_DONE, NLMSG_SPACE(MAX_PAYLOAD));
+						len = strncpy (NLMSG_DATA(nlh), "touchpad off", sizeof("touchpad off"));
+						NETLINK_CB (skb).dst_group = 1;
+						netlink_broadcast (acer_sock_user, skb, 0, 1, GFP_KERNEL);
+					}
+				}else if (acer_hotkey & 0x0001){
+						skb = alloc_skb (NLMSG_SPACE(MAX_PAYLOAD), GFP_KERNEL);
+						nlh = NLMSG_PUT (skb, 0, 0, NLMSG_DONE, NLMSG_SPACE(MAX_PAYLOAD));
+						len = strncpy (NLMSG_DATA(nlh), "odd eject", sizeof("odd eject"));
+						NETLINK_CB (skb).dst_group = 1;
+						netlink_broadcast (acer_sock_user, skb, 0, 1, GFP_KERNEL);	
+				} 
+				
+			}
+			else if (result.key_number >= 0xA0 && result.key_number <= 0xFE)
+			{
+			}
+			else if (result.key_number == 0x00 || result.key_number == 0xFF)
+			{
+			}
+			// notify user space application via acpi events
+
+		} else if (result.function_number == 0x2) {
+			//printk(ACER_INFO "leon-debug: [acer_wmi_notify]{ACPI _WED Return}Hotkey Break Event\n");
+
+			if (result.key_number >= 0x01 && result.key_number <= 0x1F)
+			{
+			}
+			else if (result.key_number >= 0x21 && result.key_number <= 0x3F)
+			{
+			}
+			else if (result.key_number >= 0x41 && result.key_number <= 0x5F)
+			{	
+			}
+			else if (result.key_number >= 0x61 && result.key_number <= 0x7F)
+			{
+				acer_hotkey = wmi_get_hotkey_map (result.key_number);
+				skb = alloc_skb (NLMSG_SPACE(MAX_PAYLOAD), GFP_KERNEL);
+                                nlh = NLMSG_PUT (skb, 0, 0, NLMSG_DONE, NLMSG_SPACE(MAX_PAYLOAD));
+                                len = strncpy (NLMSG_DATA(nlh), "display exit", sizeof("display exit"));
+                                NETLINK_CB (skb).dst_group = 1;
+                                netlink_broadcast (acer_sock_user, skb, 0, 1, GFP_KERNEL);	
+			}
+			else if (result.key_number >= 0x81 && result.key_number <= 0x9F)
+			{	
+			}
+			else if (result.key_number >= 0xA0 && result.key_number <= 0xFE)
+			{
+			}
+			else if (result.key_number == 0x00 || result.key_number == 0xFF)
+			{
+			}
+		} else
+			printk(ACER_INFO " -debug: [acer_wmi_notify]{ACPI _WED Return}Unknown Event\n");
+
+	} else {
+		printk(ACER_INFO " -debug: [acer_wmi_notify]Unknown response received\n");
+	}
+nlmsg_failure:
+		//printk(ACER_INFO "tomsun -debug : acer nlmsg failure\n");
+		printk(ACER_INFO " -debug : acer nlmsg passed\n");
 }
 
 /*
@@ -1730,65 +1839,22 @@ static int __devinit acer_platform_probe(struct platform_device *device)
 {
 	int err;
 
-	if (has_cap(ACER_CAP_MAILLED)) {
-		err = acer_led_init(&device->dev);
-		if (err)
-			goto error_mailled;
-	}
-
-	if (has_cap(ACER_CAP_BRIGHTNESS)) {
-		err = acer_backlight_init(&device->dev);
-		if (err)
-			goto error_brightness;
-	}
-
-	err = acer_rfkill_init(&device->dev);
-	if (err)
-		goto error_rfkill;
-
 	return err;
 
-error_rfkill:
-	if (has_cap(ACER_CAP_BRIGHTNESS))
-		acer_backlight_exit();
-error_brightness:
-	if (has_cap(ACER_CAP_MAILLED))
-		acer_led_exit();
-error_mailled:
-	return err;
 }
 
 static int acer_platform_remove(struct platform_device *device)
 {
-	if (has_cap(ACER_CAP_MAILLED))
-		acer_led_exit();
-	if (has_cap(ACER_CAP_BRIGHTNESS))
-		acer_backlight_exit();
-
-	acer_rfkill_exit();
 	return 0;
 }
 
 static int acer_platform_suspend(struct platform_device *dev,
 pm_message_t state)
 {
-	u32 value;
 	struct acer_data *data = &interface->data;
 
 	if (!data)
 		return -ENOMEM;
-
-	if (has_cap(ACER_CAP_MAILLED)) {
-		get_u32(&value, ACER_CAP_MAILLED);
-		set_u32(LED_OFF, ACER_CAP_MAILLED);
-		data->mailled = value;
-	}
-
-	if (has_cap(ACER_CAP_BRIGHTNESS)) {
-		get_u32(&value, ACER_CAP_BRIGHTNESS);
-		data->brightness = value;
-	}
-
 	return 0;
 }
 
@@ -1798,25 +1864,14 @@ static int acer_platform_resume(struct platform_device *device)
 
 	if (!data)
 		return -ENOMEM;
-
+/*
 	if (has_cap(ACER_CAP_MAILLED))
 		set_u32(data->mailled, ACER_CAP_MAILLED);
 
 	if (has_cap(ACER_CAP_BRIGHTNESS))
 		set_u32(data->brightness, ACER_CAP_BRIGHTNESS);
-
+*/
 	return 0;
-}
-
-static void acer_platform_shutdown(struct platform_device *device)
-{
-	struct acer_data *data = &interface->data;
-
-	if (!data)
-		return;
-
-	if (has_cap(ACER_CAP_MAILLED))
-		set_u32(LED_OFF, ACER_CAP_MAILLED);
 }
 
 static struct platform_driver acer_platform_driver = {
@@ -1828,7 +1883,6 @@ static struct platform_driver acer_platform_driver = {
 	.remove = acer_platform_remove,
 	.suspend = acer_platform_suspend,
 	.resume = acer_platform_resume,
-	.shutdown = acer_platform_shutdown,
 };
 
 static struct platform_device *acer_platform_device;
@@ -1876,7 +1930,7 @@ static int create_debugfs(void)
 {
 	interface->debug.root = debugfs_create_dir("acer-wmi", NULL);
 	if (!interface->debug.root) {
-		pr_err("Failed to create debugfs directory");
+		printk(ACER_ERR "Failed to create debugfs directory");
 		return -ENOMEM;
 	}
 
@@ -1892,15 +1946,39 @@ error_debugfs:
 	remove_debugfs();
 	return -ENOMEM;
 }
+/*added by tomsun*/
+static  void parse_acer_table (const struct dmi_header *dm)
+{
+	hotkey_num = (dm->length - 14)/sizeof (struct acer_function_map);
+	
+	struct acer_hotkey_function_data *hotkey_table = container_of (dm, struct acer_hotkey_function_data, header);
+	
+	if (dm->length < 16)
+		return;
+	commu_devices = hotkey_table->support_1;
+	
+	hotkey_button = krealloc (hotkey_button, hotkey_num*sizeof (struct acer_function_map), GFP_KERNEL);
+
+	memcpy (hotkey_button, hotkey_table->hotkey_function, sizeof (struct acer_function_map)*hotkey_num);
+}
+
+static void find_hotkeys (const struct dmi_header *dm, void *dummy)
+{
+	if (dm->type == 0xaa)
+		parse_acer_table (dm);
+}
+/*******end*******/
+
 
 static int __init acer_wmi_init(void)
 {
-	int err;
+	int err_event;
 
-	pr_info("Acer Laptop ACPI-WMI Extras\n");
+	printk(ACER_INFO "Acer Laptop ACPI-WMI Extras\n");
 
 	if (dmi_check_system(acer_blacklist)) {
-		pr_info("Blacklisted hardware detected - not loading\n");
+		printk(ACER_INFO "Blacklisted hardware detected - "
+				"not loading\n");
 		return -ENODEV;
 	}
 
@@ -1913,129 +1991,121 @@ static int __init acer_wmi_init(void)
 		interface = &AMW0_V2_interface;
 
 	if (!wmi_has_guid(AMW0_GUID1) && wmi_has_guid(WMID_GUID1))
+	{
 		interface = &wmid_interface;
-
-	if (wmi_has_guid(WMID_GUID3))
-		interface = &wmid_v2_interface;
-
-	if (interface)
-		dmi_walk(type_aa_dmi_decode, NULL);
-
-	if (wmi_has_guid(WMID_GUID2) && interface) {
-		if (!has_type_aa && ACPI_FAILURE(WMID_set_capabilities())) {
-			pr_err("Unable to detect available WMID devices\n");
-			return -ENODEV;
-		}
-		/* WMID always provides brightness methods */
-		interface->capability |= ACER_CAP_BRIGHTNESS;
-	} else if (!wmi_has_guid(WMID_GUID2) && interface && !has_type_aa) {
-		pr_err("No WMID device detection method found\n");
-		return -ENODEV;
 	}
-
+	
+	
 	if (wmi_has_guid(AMW0_GUID1) && !wmi_has_guid(WMID_GUID1)) {
 		interface = &AMW0_interface;
 
 		if (ACPI_FAILURE(AMW0_set_capabilities())) {
-			pr_err("Unable to detect available AMW0 devices\n");
+			printk(ACER_ERR "Unable to detect available AMW0 "
+					"devices\n");
 			return -ENODEV;
 		}
 	}
+	
+	
+	/*added by tomsun*/
+	dmi_walk (find_hotkeys, NULL);
+	commu_keynumber = wmi_get_commu_keynumber();
+	acer_wmi_get_device_status(commu_keynumber, commu_devices); 
+	
 
+	/*end*/
+
+	if (wmi_has_guid(WMID_GUID4)) {
+		struct acer_wmi_hotkey_set_function1_input_arg2 arg2 = {
+			.function_number = 0x1,
+			.communication_status = 0xFFFF,
+			.other_status = 0xFFFF,
+			/*.launch_manager_status = 0x41,*/
+		};
+		if (!strcmp (wmi_default, "wmi_default=no")){
+			arg2.launch_manager_status=0x1;
+		}else if (!strcmp (wmi_default, "wmi_default=on")){
+			arg2.communication_status=0x0001;
+			arg2.launch_manager_status=0x41;
+		}else if (!strcmp(wmi_default, "wmi_default=off")){
+			arg2.communication_status=0x0000;
+			arg2.launch_manager_status=0x41;
+		}
+		struct acer_wmi_hotkey_set_function1_return_value result;
+		acer_sock_user = netlink_kernel_create (&init_net, NETLINK_LITE_HOTKEY, 0, NULL, NULL, THIS_MODULE);
+		if (acer_sock_user == NULL)
+		{
+			printk (ACER_ERR "####  create netlink sock failer\n");
+		}
+		acer_wmi_hotkey_set_function1(ACER_WMID_HOTKEY_SET_FUNCTION_METHODID, arg2, &result);
+	}
+
+
+	if (wmi_has_guid(WMID_GUID3)) {
+                err_event = wmi_install_notify_handler(WMID_GUID3, acer_wmi_notify, NULL);
+        }
+	if (platform_driver_register(&acer_platform_driver)) {
+		printk(ACER_ERR "Unable to register platform driver.\n");
+		goto error_platform_register;
+	}
+	
+#if ACER_WMI_DEBUG
 	if (wmi_has_guid(AMW0_GUID1))
 		AMW0_find_mailled();
 
 	if (!interface) {
-		pr_err("No or unsupported WMI interface, unable to load\n");
+		printk(ACER_ERR "No or unsupported WMI interface, unable to "
+				"load\n");
 		return -ENODEV;
 	}
-
+	
+	
 	set_quirks();
-
-	if (acpi_video_backlight_support()) {
+	if (acpi_video_backlight_support() && has_cap(ACER_CAP_BRIGHTNESS)) {
 		interface->capability &= ~ACER_CAP_BRIGHTNESS;
-		pr_info("Brightness must be controlled by "
+		printk(ACER_INFO "Brightness must be controlled by "
 		       "generic video driver\n");
 	}
 
-	if (wmi_has_guid(WMID_GUID3)) {
-		if (ec_raw_mode) {
-			if (ACPI_FAILURE(acer_wmi_enable_ec_raw())) {
-				pr_err("Cannot enable EC raw mode\n");
-				return -ENODEV;
-			}
-		} else if (ACPI_FAILURE(acer_wmi_enable_lm())) {
-			pr_err("Cannot enable Launch Manager mode\n");
-			return -ENODEV;
-		}
-	} else if (ec_raw_mode) {
-		pr_info("No WMID EC raw mode enable method\n");
-	}
-
-	if (wmi_has_guid(ACERWMID_EVENT_GUID)) {
-		err = acer_wmi_input_setup();
-		if (err)
-			return err;
-	}
-
-	err = platform_driver_register(&acer_platform_driver);
-	if (err) {
-		pr_err("Unable to register platform driver.\n");
+	if (platform_driver_register(&acer_platform_driver)) {
+		printk(ACER_ERR "Unable to register platform driver.\n");
 		goto error_platform_register;
 	}
-
+#endif
 	acer_platform_device = platform_device_alloc("acer-wmi", -1);
-	if (!acer_platform_device) {
-		err = -ENOMEM;
-		goto error_device_alloc;
-	}
+	platform_device_add(acer_platform_device);
 
-	err = platform_device_add(acer_platform_device);
-	if (err)
-		goto error_device_add;
-
-	err = create_sysfs();
-	if (err)
-		goto error_create_sys;
-
-	if (wmi_has_guid(WMID_GUID2)) {
-		interface->debug.wmid_devices = get_wmid_devices();
-		err = create_debugfs();
-		if (err)
-			goto error_create_debugfs;
-	}
-
-	/* Override any initial settings with values from the commandline */
-	acer_commandline_init();
+	/*tomsun 2011-03-24*/
+	comm_kobj = kobject_create_and_add ("acer-wmi", kernel_kobj);
+        if (!comm_kobj)
+                return -ENOMEM;
+        err_event = sysfs_create_group(comm_kobj, &commu_attr_group);
+        if (err_event)
+                kobject_put (comm_kobj);
+	/*end*/
 
 	return 0;
 
-error_create_debugfs:
-	remove_sysfs(acer_platform_device);
-error_create_sys:
-	platform_device_del(acer_platform_device);
-error_device_add:
-	platform_device_put(acer_platform_device);
-error_device_alloc:
-	platform_driver_unregister(&acer_platform_driver);
 error_platform_register:
-	if (wmi_has_guid(ACERWMID_EVENT_GUID))
-		acer_wmi_input_destroy();
-
-	return err;
+	return -ENODEV;
 }
 
 static void __exit acer_wmi_exit(void)
 {
-	if (wmi_has_guid(ACERWMID_EVENT_GUID))
-		acer_wmi_input_destroy();
-
+	kfree (hotkey_button);
 	remove_sysfs(acer_platform_device);
 	remove_debugfs();
-	platform_device_unregister(acer_platform_device);
+	platform_device_del(acer_platform_device);
 	platform_driver_unregister(&acer_platform_driver);
+	
+	if (wmi_has_guid(WMID_GUID3)) {
 
-	pr_info("Acer Laptop WMI Extras unloaded\n");
+                wmi_remove_notify_handler(WMID_GUID3);
+        }
+	if (!acer_sock_user){
+		netlink_kernel_release(acer_sock_user);	
+	}
+	printk(ACER_INFO "Acer Laptop WMI Extras unloaded\n");
 	return;
 }
 

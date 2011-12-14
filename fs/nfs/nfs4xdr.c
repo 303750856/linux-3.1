@@ -2517,7 +2517,7 @@ static void nfs4_xdr_enc_getacl(struct rpc_rqst *req, struct xdr_stream *xdr,
 	encode_compound_hdr(xdr, req, &hdr);
 	encode_sequence(xdr, &args->seq_args, &hdr);
 	encode_putfh(xdr, args->fh, &hdr);
-	replen = hdr.replen + op_decode_hdr_maxsz + nfs4_fattr_bitmap_maxsz + 1;
+	replen = hdr.replen + op_decode_hdr_maxsz + 1;
 	encode_getattr_two(xdr, FATTR4_WORD0_ACL, 0, &hdr);
 
 	xdr_inline_pages(&req->rq_rcv_buf, replen << 2,
@@ -4959,7 +4959,7 @@ decode_restorefh(struct xdr_stream *xdr)
 static int decode_getacl(struct xdr_stream *xdr, struct rpc_rqst *req,
 		size_t *acl_len)
 {
-	__be32 *savep;
+	__be32 *savep, *bm_p;
 	uint32_t attrlen,
 		 bitmap[3] = {0};
 	struct kvec *iov = req->rq_rcv_buf.head;
@@ -4968,6 +4968,7 @@ static int decode_getacl(struct xdr_stream *xdr, struct rpc_rqst *req,
 	*acl_len = 0;
 	if ((status = decode_op_hdr(xdr, OP_GETATTR)) != 0)
 		goto out;
+	bm_p = xdr->p;
 	if ((status = decode_attr_bitmap(xdr, bitmap)) != 0)
 		goto out;
 	if ((status = decode_attr_length(xdr, &attrlen, &savep)) != 0)
@@ -4976,12 +4977,20 @@ static int decode_getacl(struct xdr_stream *xdr, struct rpc_rqst *req,
 	if (unlikely(bitmap[0] & (FATTR4_WORD0_ACL - 1U)))
 		return -EIO;
 	if (likely(bitmap[0] & FATTR4_WORD0_ACL)) {
-		size_t hdrlen;
+		size_t hdrlen, len;
 		u32 recvd;
+
+		/*The bitmap (xdr len + bitmasks) and the attr xdr len words
+		 * are stored with the acl data to handle the problem of
+		 * variable length bitmasks.*/
+		xdr->p = bm_p;
+		len = be32_to_cpup(bm_p);
+		len += 2; /* add bitmap and attr xdr len words */
 
 		/* We ignore &savep and don't do consistency checks on
 		 * the attr length.  Let userspace figure it out.... */
 		hdrlen = (u8 *)xdr->p - (u8 *)iov->iov_base;
+		attrlen += len << 2; /* attrlen is in bytes */
 		recvd = req->rq_rcv_buf.len - hdrlen;
 		if (attrlen > recvd) {
 			dprintk("NFS: server cheating in getattr"

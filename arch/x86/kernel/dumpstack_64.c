@@ -273,7 +273,7 @@ void show_registers(struct pt_regs *regs)
 		show_stack_log_lvl(NULL, regs, (unsigned long *)sp,
 				   0, KERN_EMERG);
 
-		printk(KERN_EMERG "Code: ");
+		printk(KERN_EMERG "Code:");
 
 		ip = (u8 *)regs->ip - code_prologue;
 		if (ip < (u8 *)PAGE_OFFSET || probe_kernel_address(ip, c)) {
@@ -284,13 +284,13 @@ void show_registers(struct pt_regs *regs)
 		for (i = 0; i < code_len; i++, ip++) {
 			if (ip < (u8 *)PAGE_OFFSET ||
 					probe_kernel_address(ip, c)) {
-				printk(" Bad RIP value.");
+				printk("  Bad RIP value.");
 				break;
 			}
 			if (ip == (u8 *)regs->ip)
-				printk("<%02x> ", c);
+				printk(" <%02x>", c);
 			else
-				printk("%02x ", c);
+				printk(" %02x", c);
 		}
 	}
 	printk("\n");

@@ -49,6 +49,7 @@
 #include <linux/sched.h>
 #include <linux/ptrace.h>
 #include <linux/security.h>
+#include <linux/utrace.h>
 struct linux_binprm;
 
 /*
@@ -58,8 +59,12 @@ static inline void ptrace_report_syscall(struct pt_regs *regs)
 {
 	int ptrace = current->ptrace;
 
-	if (!(ptrace & PT_PTRACED))
-		return;
+	if (!(ptrace & PT_SYSCALL_TRACE)) {
+#ifdef TIF_SYSCALL_EMU
+		if (!test_thread_flag(TIF_SYSCALL_EMU))
+#endif
+			return;
+	}
 
 	ptrace_notify(SIGTRAP | ((ptrace & PT_TRACESYSGOOD) ? 0x80 : 0));
 
@@ -96,9 +101,15 @@ static inline void ptrace_report_syscall(struct pt_regs *regs)
 static inline __must_check int tracehook_report_syscall_entry(
 	struct pt_regs *regs)
 {
+	if ((task_utrace_flags(current) & UTRACE_EVENT(SYSCALL_ENTRY)) &&
+	    utrace_report_syscall_entry(regs))
+		return 1;
 	ptrace_report_syscall(regs);
 	return 0;
 }
+
+#define ptrace_wants_step(task)	\
+	((task)->ptrace & (PT_SINGLE_STEP | PT_SINGLE_BLOCK))
 
 /**
  * tracehook_report_syscall_exit - task has just finished a system call
@@ -119,7 +130,10 @@ static inline __must_check int tracehook_report_syscall_entry(
  */
 static inline void tracehook_report_syscall_exit(struct pt_regs *regs, int step)
 {
-	if (step) {
+	if (task_utrace_flags(current) & UTRACE_EVENT(SYSCALL_EXIT))
+		utrace_report_syscall_exit(regs);
+
+	if (step && ptrace_wants_step(current)) {
 		siginfo_t info;
 		user_single_step_siginfo(current, regs, &info);
 		force_sig_info(SIGTRAP, &info, current);
@@ -148,8 +162,32 @@ static inline void tracehook_signal_handler(int sig, siginfo_t *info,
 					    const struct k_sigaction *ka,
 					    struct pt_regs *regs, int stepping)
 {
-	if (stepping)
+	if (task_utrace_flags(current))
+		utrace_signal_handler(current, stepping);
+	if (stepping && ptrace_wants_step(current))
 		ptrace_notify(SIGTRAP);
+}
+
+/**
+ * tracehook_consider_fatal_signal - suppress special handling of fatal signal
+ * @task:		task receiving the signal
+ * @sig:		signal number being sent
+ *
+ * Return nonzero to prevent special handling of this termination signal.
+ * Normally handler for signal is %SIG_DFL.  It can be %SIG_IGN if @sig is
+ * ignored, in which case force_sig() is about to reset it to %SIG_DFL.
+ * When this returns zero, this signal might cause a quick termination
+ * that does not give the debugger a chance to intercept the signal.
+ *
+ * Called with or without @task->sighand->siglock held.
+ */
+static inline int tracehook_consider_fatal_signal(struct task_struct *task,
+						  int sig)
+{
+	if (unlikely(task_utrace_flags(task) & (UTRACE_EVENT(SIGNAL_TERM) |
+						UTRACE_EVENT(SIGNAL_CORE))))
+		return 1;
+	return task->ptrace != 0;
 }
 
 #ifdef TIF_NOTIFY_RESUME
@@ -179,10 +217,21 @@ static inline void set_notify_resume(struct task_struct *task)
  * asynchronously, this will be called again before we return to
  * user mode.
  *
- * Called without locks.
+ * Called without locks.  However, on some machines this may be
+ * called with interrupts disabled.
  */
 static inline void tracehook_notify_resume(struct pt_regs *regs)
 {
+	struct task_struct *task = current;
+	/*
+	 * Prevent the following store/load from getting ahead of the
+	 * caller which clears TIF_NOTIFY_RESUME. This pairs with the
+	 * implicit mb() before setting TIF_NOTIFY_RESUME in
+	 * set_notify_resume().
+	 */
+	smp_mb();
+	if (task_utrace_flags(task))
+		utrace_resume(task, regs);
 }
 #endif	/* TIF_NOTIFY_RESUME */
 

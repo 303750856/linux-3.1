@@ -105,7 +105,7 @@ void show_registers(struct pt_regs *regs)
 		printk(KERN_EMERG "Stack:\n");
 		show_stack_log_lvl(NULL, regs, &regs->sp, 0, KERN_EMERG);
 
-		printk(KERN_EMERG "Code: ");
+		printk(KERN_EMERG "Code:");
 
 		ip = (u8 *)regs->ip - code_prologue;
 		if (ip < (u8 *)PAGE_OFFSET || probe_kernel_address(ip, c)) {
@@ -116,13 +116,13 @@ void show_registers(struct pt_regs *regs)
 		for (i = 0; i < code_len; i++, ip++) {
 			if (ip < (u8 *)PAGE_OFFSET ||
 					probe_kernel_address(ip, c)) {
-				printk(" Bad EIP value.");
+				printk("  Bad EIP value.");
 				break;
 			}
 			if (ip == (u8 *)regs->ip)
-				printk("<%02x> ", c);
+				printk(" <%02x>", c);
 			else
-				printk("%02x ", c);
+				printk(" %02x", c);
 		}
 	}
 	printk("\n");

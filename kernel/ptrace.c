@@ -24,7 +24,34 @@
 #include <linux/regset.h>
 #include <linux/hw_breakpoint.h>
 #include <linux/cn_proc.h>
+#include <linux/utrace.h>
 
+void ptrace_signal_wake_up(struct task_struct *p, int quiescent)
+{
+	unsigned int state;
+
+	set_tsk_thread_flag(p, TIF_SIGPENDING);
+
+	state = TASK_INTERRUPTIBLE;
+	if (quiescent)
+		state |= (__TASK_STOPPED | __TASK_TRACED);
+	if (!wake_up_quiescent(p, state))
+		kick_process(p);
+}
+
+static void ptrace_set_syscall_trace(struct task_struct *p, bool on)
+{
+	task_utrace_lock(p);
+	if (on) {
+		p->ptrace |= PT_SYSCALL_TRACE;
+		set_tsk_thread_flag(p, TIF_SYSCALL_TRACE);
+	} else {
+		p->ptrace &= ~PT_SYSCALL_TRACE;
+		if (!(task_utrace_flags(p) & UTRACE_EVENT_SYSCALL))
+			clear_tsk_thread_flag(p, TIF_SYSCALL_TRACE);
+	}
+	task_utrace_unlock(p);
+}
 
 static int ptrace_trapping_sleep_fn(void *flags)
 {
@@ -106,7 +133,7 @@ void __ptrace_unlink(struct task_struct *child)
 	 * TASK_KILLABLE sleeps.
 	 */
 	if (child->jobctl & JOBCTL_STOP_PENDING || task_is_traced(child))
-		signal_wake_up(child, task_is_traced(child));
+		ptrace_signal_wake_up(child, task_is_traced(child));
 
 	spin_unlock(&child->sighand->siglock);
 }
@@ -296,7 +323,7 @@ static int ptrace_attach(struct task_struct *task, long request,
 	 */
 	if (task_is_stopped(task) &&
 	    task_set_jobctl_pending(task, JOBCTL_TRAP_STOP | JOBCTL_TRAPPING))
-		signal_wake_up(task, 1);
+		ptrace_signal_wake_up(task, 1);
 
 	spin_unlock(&task->sighand->siglock);
 
@@ -406,7 +433,7 @@ static int ptrace_detach(struct task_struct *child, unsigned int data)
 
 	/* Architecture-specific hardware disable .. */
 	ptrace_disable(child);
-	clear_tsk_thread_flag(child, TIF_SYSCALL_TRACE);
+	ptrace_set_syscall_trace(child, false);
 
 	write_lock_irq(&tasklist_lock);
 	/*
@@ -589,13 +616,12 @@ static int ptrace_setsiginfo(struct task_struct *child, const siginfo_t *info)
 static int ptrace_resume(struct task_struct *child, long request,
 			 unsigned long data)
 {
+	unsigned long flags;
+
 	if (!valid_signal(data))
 		return -EIO;
 
-	if (request == PTRACE_SYSCALL)
-		set_tsk_thread_flag(child, TIF_SYSCALL_TRACE);
-	else
-		clear_tsk_thread_flag(child, TIF_SYSCALL_TRACE);
+	ptrace_set_syscall_trace(child, request == PTRACE_SYSCALL);
 
 #ifdef TIF_SYSCALL_EMU
 	if (request == PTRACE_SYSEMU || request == PTRACE_SYSEMU_SINGLESTEP)
@@ -604,20 +630,23 @@ static int ptrace_resume(struct task_struct *child, long request,
 		clear_tsk_thread_flag(child, TIF_SYSCALL_EMU);
 #endif
 
+	child->ptrace &= ~(PT_SINGLE_STEP | PT_SINGLE_BLOCK);
 	if (is_singleblock(request)) {
 		if (unlikely(!arch_has_block_step()))
 			return -EIO;
-		user_enable_block_step(child);
+		child->ptrace |= PT_SINGLE_BLOCK;
 	} else if (is_singlestep(request) || is_sysemu_singlestep(request)) {
 		if (unlikely(!arch_has_single_step()))
 			return -EIO;
-		user_enable_single_step(child);
-	} else {
-		user_disable_single_step(child);
+		child->ptrace |= PT_SINGLE_STEP;
 	}
 
 	child->exit_code = data;
-	wake_up_state(child, __TASK_TRACED);
+
+	if (lock_task_sighand(child, &flags)) {
+		wake_up_quiescent(child, __TASK_TRACED);
+		unlock_task_sighand(child, &flags);
+	}
 
 	return 0;
 }
@@ -725,7 +754,7 @@ int ptrace_request(struct task_struct *child, long request,
 		 * tracee into STOP.
 		 */
 		if (likely(task_set_jobctl_pending(child, JOBCTL_TRAP_STOP)))
-			signal_wake_up(child, child->jobctl & JOBCTL_LISTENING);
+			ptrace_signal_wake_up(child, child->jobctl & JOBCTL_LISTENING);
 
 		unlock_task_sighand(child, &flags);
 		ret = 0;
@@ -751,7 +780,7 @@ int ptrace_request(struct task_struct *child, long request,
 			 * start of this trap and now.  Trigger re-trap.
 			 */
 			if (child->jobctl & JOBCTL_TRAP_NOTIFY)
-				signal_wake_up(child, true);
+				ptrace_signal_wake_up(child, true);
 			ret = 0;
 		}
 		unlock_task_sighand(child, &flags);

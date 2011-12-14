@@ -1014,12 +1014,11 @@ bytes respectively. Such letter suffixes can also be entirely omitted.
 			Enable intel iommu driver.
 		off
 			Disable intel iommu driver.
-		igfx_off [Default Off]
-			By default, gfx is mapped as normal device. If a gfx
-			device has a dedicated DMAR unit, the DMAR unit is
-			bypassed by not enabling DMAR with this option. In
-			this case, gfx device will use physical address for
-			DMA.
+		igfx_on [Default Off]
+			By default, the gfx's DMAR unit is bypassed by not enabling
+			DMAR with this option. So the gfx device will use physical
+			address for DMA. When this option is enabled it the gfx is
+			mapped as normal device.
 		forcedac [x86_64]
 			With this option iommu will not optimize to look
 			for io virtual address below 32-bit forcing dual
