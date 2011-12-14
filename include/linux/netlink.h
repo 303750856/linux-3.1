@@ -26,6 +26,9 @@
 #define NETLINK_ECRYPTFS	19
 #define NETLINK_RDMA		20
 #define NETLINK_CRYPTO		21	/* Crypto layer */
+#define NETLINK_LITE_HOTKEY		25 		//joejiang@linpus.com
+#define NETLINK_LITE_ATKBD		26 		//joejiang@linpus.com
+
 
 #define MAX_LINKS 32		
 
