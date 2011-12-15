@@ -290,7 +290,8 @@ static unsigned char __devinit sp5100_tco_setupdevice(void)
 	/* Request the IO ports used by this driver */
 	pm_iobase = SP5100_IO_PM_INDEX_REG;
 	if (!request_region(pm_iobase, SP5100_PM_IOPORTS_SIZE, "SP5100 TCO")) {
-		printk(KERN_ERR PFX "I/O address 0x%04x already in use\n",
+		printk(PFX "I/O address 0x%04x already in use\n",
+		//printk(KERN_ERR PFX "I/O address 0x%04x already in use\n",
 			pm_iobase);
 		goto exit;
 	}
@@ -308,7 +309,8 @@ static unsigned char __devinit sp5100_tco_setupdevice(void)
 
 	if (!request_mem_region_exclusive(val, SP5100_WDT_MEM_MAP_SIZE,
 								"SP5100 TCO")) {
-		printk(KERN_ERR PFX "mmio address 0x%04x already in use\n",
+		printk(PFX "mmio address 0x%04x already in use\n",
+		//printk(KERN_ERR PFX "mmio address 0x%04x already in use\n",
 			val);
 		goto unreg_region;
 	}
