@@ -1907,9 +1907,10 @@ set_qf_format:
 			clear_opt(sb, INIT_INODE_TABLE);
 			break;
 		default:
-			ext4_msg(sb, KERN_ERR,
-			       "Unrecognized mount option \"%s\" "
-			       "or missing value", p);
+		//mars	ext4_msg(sb, KERN_ERR,
+		//mars	       "Unrecognized mount option \"%s\" "
+		//mars	       "or missing value", p);
+			; //mars
 			return 0;
 		}
 	}
@@ -3296,8 +3297,10 @@ static int ext4_fill_super(struct super_block *sb, void *data, int silent)
 			ext4_msg(sb, KERN_INFO, "mounting ext2 file system "
 				 "using the ext4 subsystem");
 		else {
+		/* mars  marked for boot up message
 			ext4_msg(sb, KERN_ERR, "couldn't mount as ext2 due "
 				 "to feature incompatibilities");
+		*/
 			goto failed_mount;
 		}
 	}
@@ -3307,8 +3310,10 @@ static int ext4_fill_super(struct super_block *sb, void *data, int silent)
 			ext4_msg(sb, KERN_INFO, "mounting ext3 file system "
 				 "using the ext4 subsystem");
 		else {
+		/*mars  marked for boot up message
 			ext4_msg(sb, KERN_ERR, "couldn't mount as ext3 due "
 				 "to feature incompatibilities");
+		*/
 			goto failed_mount;
 		}
 	}
