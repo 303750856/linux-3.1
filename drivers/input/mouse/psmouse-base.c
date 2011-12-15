@@ -87,6 +87,12 @@ PSMOUSE_DEFINE_ATTR(resetafter, S_IWUSR | S_IRUGO,
 PSMOUSE_DEFINE_ATTR(resync_time, S_IWUSR | S_IRUGO,
 			(void *) offsetof(struct psmouse, resync_time),
 			psmouse_show_int_attr, psmouse_set_int_attr);
+//**** mike 
+PSMOUSE_DEFINE_ATTR(touchpadoff, 0666 , NULL, touchpad_read, touchpad_write);
+
+static int touchpadoff_control = 0;
+//**** end
+
 
 static struct attribute *psmouse_attributes[] = {
 	&psmouse_attr_protocol.dattr.attr,
@@ -94,6 +100,7 @@ static struct attribute *psmouse_attributes[] = {
 	&psmouse_attr_resolution.dattr.attr,
 	&psmouse_attr_resetafter.dattr.attr,
 	&psmouse_attr_resync_time.dattr.attr,
+	&psmouse_attr_touchpadoff.dattr.attr, //mike add	
 	NULL
 };
 
@@ -294,6 +301,11 @@ static irqreturn_t psmouse_interrupt(struct serio *serio,
 		unsigned char data, unsigned int flags)
 {
 	struct psmouse *psmouse = serio_get_drvdata(serio);
+
+	//*** mike
+	if (touchpadoff_control == 1)
+		goto out;
+	//*** end
 
 	if (psmouse->state == PSMOUSE_IGNORE)
 		goto out;
@@ -1715,6 +1727,30 @@ static int psmouse_get_maxproto(char *buffer, const struct kernel_param *kp)
 
 	return sprintf(buffer, "%s", psmouse_protocol_by_type(type)->name);
 }
+
+//*** mike
+
+static ssize_t touchpad_read(struct psmouse *psmouse, void *data, char *buf)
+{
+	 return sprintf(buf, "%d\n", touchpadoff_control);
+}
+
+static ssize_t touchpad_write(struct psmouse *psmouse, void *data, const char *buf, size_t count)
+{
+        unsigned long touchpad_set;
+
+	if( touchpad_set < 0 || touchpad_set > 1)
+	{
+		return -EINVAL;
+	}
+	
+        sscanf(buf, "%d", &touchpadoff_control);
+
+	
+	return count;
+}
+
+//*** end
 
 static int __init psmouse_init(void)
 {
