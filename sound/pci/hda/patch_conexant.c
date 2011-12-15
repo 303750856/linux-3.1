@@ -2238,18 +2238,20 @@ static void cxt5066_ideapad_automic(struct hda_codec *codec)
 
 	struct hda_verb ext_mic_present[] = {
 		{0x14, AC_VERB_SET_CONNECT_SEL, 0},
+		{0x17, AC_VERB_SET_CONNECT_SEL, 0},
+		{0x1a, AC_VERB_SET_PIN_WIDGET_CONTROL, PIN_VREF80},
 		{0x1b, AC_VERB_SET_PIN_WIDGET_CONTROL, PIN_VREF80},
-		{0x23, AC_VERB_SET_PIN_WIDGET_CONTROL, 0},
 		{}
 	};
 	static const struct hda_verb ext_mic_absent[] = {
-		{0x14, AC_VERB_SET_CONNECT_SEL, 2},
-		{0x23, AC_VERB_SET_PIN_WIDGET_CONTROL, PIN_IN},
-		{0x1b, AC_VERB_SET_PIN_WIDGET_CONTROL, 0},
+		{0x14, AC_VERB_SET_CONNECT_SEL, 0},
+		{0x17, AC_VERB_SET_CONNECT_SEL, 1},
+		{0x1a, AC_VERB_SET_PIN_WIDGET_CONTROL, PIN_VREF80},
+		{0x1b, AC_VERB_SET_PIN_WIDGET_CONTROL, PIN_VREF80},
 		{}
 	};
 
-	present = snd_hda_jack_detect(codec, 0x1b);
+	present = snd_hda_jack_detect(codec, 0x1a);
 	if (present) {
 		snd_printdd("CXT5066: external microphone detected\n");
 		snd_hda_sequence_write(codec, ext_mic_present);
@@ -2911,14 +2913,15 @@ static const struct hda_verb cxt5066_init_verbs_ideapad[] = {
 	{0x20, AC_VERB_SET_PIN_WIDGET_CONTROL, PIN_OUT},
 	{0x22, AC_VERB_SET_PIN_WIDGET_CONTROL, PIN_OUT},
 
-	/* internal microphone */
-	{0x23, AC_VERB_SET_PIN_WIDGET_CONTROL, PIN_IN}, /* enable internal mic */
+	/* Disable digital microphone port */
+	{0x23, AC_VERB_SET_PIN_WIDGET_CONTROL, 0},
+	{0x23, AC_VERB_SET_AMP_GAIN_MUTE, AMP_OUT_UNMUTE | 0x2},
 
 	/* EAPD */
 	{0x1d, AC_VERB_SET_EAPD_BTLENABLE, 0x2}, /* default on */
 
 	{0x19, AC_VERB_SET_UNSOLICITED_ENABLE, AC_USRSP_EN | CONEXANT_HP_EVENT},
-	{0x1b, AC_VERB_SET_UNSOLICITED_ENABLE, AC_USRSP_EN | CONEXANT_MIC_EVENT},
+	{0x1a, AC_VERB_SET_UNSOLICITED_ENABLE, AC_USRSP_EN | CONEXANT_MIC_EVENT},
 	{ } /* end */
 };
 
@@ -3122,8 +3125,11 @@ static int patch_cxt5066(struct hda_codec *codec)
 
 	set_beep_amp(spec, 0x13, 0, HDA_OUTPUT);
 
+
+    if(codec->subsystem_id == 0x17aa5005 || codec->subsystem_id == 0x17aa5007) //S206
+		board_config = 10;
+
 	switch (board_config) {
-	default:
 	case CXT5066_LAPTOP:
 		spec->mixers[spec->num_mixers++] = cxt5066_mixer_master;
 		spec->mixers[spec->num_mixers++] = cxt5066_mixers;
@@ -3195,6 +3201,25 @@ static int patch_cxt5066(struct hda_codec *codec)
 		/* input source automatically selected */
 		spec->input_mux = NULL;
 		break;
+	case 10:
+		codec->patch_ops.init = cxt5066_init;
+		codec->patch_ops.unsol_event = cxt5066_unsol_event;
+		spec->mixers[spec->num_mixers++] = cxt5066_mixer_master;
+		spec->mixers[spec->num_mixers++] = cxt5066_mixers;
+		spec->init_verbs[0] = cxt5066_init_verbs_ideapad;
+		spec->port_d_mode = 0;
+		spec->dell_vostro = 1;
+		spec->mic_boost = 2;	/* default 20dB gain */
+
+
+		/* no S/PDIF out */
+		spec->multiout.dig_out_nid = 0;
+
+
+		/* input source automatically selected */
+		spec->input_mux = NULL;
+		break;
+	default:
 	case CXT5066_IDEAPAD:
 		codec->patch_ops.init = cxt5066_init;
 		codec->patch_ops.unsol_event = cxt5066_unsol_event;
